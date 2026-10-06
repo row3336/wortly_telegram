@@ -180,10 +180,16 @@ def test_the_process_entries_run_inside_private_logs(tmp_path, monkeypatch, capt
                       "pool_timeout_seconds = 1\n")
     database = ('[database]\nconninfo = "host=/tmp port=5432 dbname=wortly_test user=wortly sslmode=disable"\n'
                 "connect_timeout_seconds = 5\npool_min_size = 0\npool_max_size = 1\npool_timeout_seconds = 5\n")
+    service_secret = "synthetic-service-secret-LOG"
+    secret_file = tmp_path / "service_secret"
+    secret_file.write_text(service_secret + "\n")
+    secret_file.chmod(0o600)
+    # The bot opens no database (answer 2.4): [core] instead of [database] and [access].
     bot = tmp_path / "bot.toml"
-    bot.write_text(database + "[bot]\ninstance = \"bot-1\"\nleader_lease_seconds = 60\nstop_margin_seconds = 15\n"
-                   "standby_retry_seconds = 10\npoll_timeout_seconds = 25\nlock_timeout_milliseconds = 1000\n"
-                   "[access]\nsession_lifetime_seconds = 3600\n" + telegram_table)
+    bot.write_text("[bot]\ninstance = \"bot-1\"\nleader_lease_seconds = 60\nstop_margin_seconds = 15\n"
+                   "standby_retry_seconds = 10\npoll_timeout_seconds = 25\n"
+                   f'[core]\ninternal_url = "http://127.0.0.1:8001"\nservice_secret_file = "{secret_file}"\n'
+                   "connect_timeout_seconds = 2\nread_timeout_seconds = 5\n" + telegram_table)
     delivery = tmp_path / "delivery.toml"
     delivery.write_text(database + "[delivery]\ninstance = \"delivery-1\"\njob_lease_seconds = 30\n"
                         "recovery_period_seconds = 60\npoll_interval_seconds = 1\nmax_failed_preflights = 3\n"
@@ -194,6 +200,9 @@ def test_the_process_entries_run_inside_private_logs(tmp_path, monkeypatch, capt
         logging.getLogger("wortly_telegram.probe").warning("token %s and %s", settings.telegram.bot_token,
                                                            quote(settings.telegram.bot_token, safe=""))
         logging.getLogger("httpx").info("HTTP Request: GET /bot%s/getMe", settings.telegram.bot_token)
+        core = getattr(settings, "core", None)
+        if core is not None:
+            logging.getLogger("httpx").warning("header %s", core.service_secret)
         return 0
 
     monkeypatch.setattr(bot_main, "serve", serve)
@@ -202,6 +211,8 @@ def test_the_process_entries_run_inside_private_logs(tmp_path, monkeypatch, capt
     assert delivery_main.main(["--config", str(delivery)]) == 0
     assert len([line for line in capture.lines if "wortly_telegram.probe" in line]) == 2
     assert not [line for line in capture.lines if leaking(line)]
+    assert [line for line in capture.lines if "header" in line]
+    assert not [line for line in capture.lines if service_secret in line]
 
 
 def test_log_secrets_hold_the_token_forms_and_both_connection_strings(capture):

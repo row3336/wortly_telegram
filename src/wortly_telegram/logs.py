@@ -6,7 +6,10 @@ only, and the secret values given here are replaced wherever a library writes th
 
 - The bot token in every written form (the core's token_forms): PTB puts it into each
   request URL, uvicorn-like writers percent-encode its colon.
-- Both connection strings of the database settings (as configured and as libpq gets it).
+- Delivery: both connection strings of the database settings (as configured and as
+  libpq gets it), through log_secrets.
+- Bot: the service secret of the core's internal API; the bot opens no database
+  (answer 2.4), so bot_main passes the token forms and the secret itself.
 
 Library loggers are kept at WARNING: at DEBUG and INFO, PTB and httpx write request
 URLs, message texts, Telegram names and answers. The adapter's own code logs outcome

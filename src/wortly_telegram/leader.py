@@ -1,24 +1,31 @@
 """The single poller of the bot role: a leader loop over the core's lease (design T-D §2.4.1, ВП-5а).
 
 Telegram does not guarantee one consumer of getUpdates (TC:291), so only the holder
-of the "bot" lease in PostgreSQL (wortly.jobs.leases) polls. The rules of this loop:
+of the "bot" lease polls. The lease lives in the core's PostgreSQL (wortly.jobs.leases);
+the bot reaches it only through the core's internal API (gateway.HttpLeaseStore,
+answer 2.4). The rules of this loop:
 
 - Time is this process's monotonic clock, never the wall clock. A lease taken or
-  renewed by a call that started at local time ``t`` expires no earlier than
-  ``t + L`` in the database, so polling must have stopped by ``t + L - margin``.
+  renewed by a call that started at local time ``t`` (read before the request is sent)
+  expires no earlier than ``t + L`` in the database, because the core starts the
+  duration inside its own transaction, after the request arrived. Polling must
+  therefore have stopped by ``t + L - margin``; the core's expires_at is never used.
+- A lease whose acquisition answered only after that deadline is not used for polling
+  at all: it is given back at once (a slow core, a long network hop).
 - The lease is renewed every L/3. A renewal that fails in any way (the lease is lost,
   the database is gone, anything raised) loses the leadership at once: polling stops.
 - A renewal that has not answered by the deadline loses the leadership too. The
-  deadline is waited for beside the call, so a hanging database never keeps polling
-  alive past it.
+  deadline is waited for beside the call, which is then cancelled, so a hanging core
+  never keeps polling alive past it. Every store call also has its own deadline
+  (gateway.InternalClient), shorter than the margin (config.py).
 - Stopping polling ends with one more getUpdates that confirms the fetched updates
   (PTB Updater._stop_polling); the margin covers that request (config.py checks it).
 - A standby instance tries to take the lease every ``standby_retry``.
 - On a stop request polling stops first and the lease is released after, so a
   successor need not wait for it to expire (design §2.4.4).
 
-Store calls are synchronous (psycopg) and run in a worker thread; nothing here imports
-a database driver. Logs carry exception classes only (TC:273).
+Store calls are coroutines (HTTP requests); nothing here imports a database driver.
+Logs carry exception classes only (TC:273).
 """
 
 from __future__ import annotations
@@ -69,26 +76,24 @@ class Poller(Protocol):
 
 
 class LeaseStore(Protocol):
-    """wortly.jobs.leases.LeaseStore, synchronous."""
+    """The core's lease of a role (gateway.HttpLeaseStore); acquire answers None while held."""
 
-    def acquire(self, role: str, *, holder: str, duration: timedelta) -> Any: ...
+    async def acquire(self, role: str, *, holder: str, duration: timedelta) -> Any: ...
 
-    def renew(self, lease: Any, *, duration: timedelta) -> Any: ...
+    async def renew(self, lease: Any, *, duration: timedelta) -> Any: ...
 
-    def release(self, lease: Any) -> bool: ...
+    async def release(self, lease: Any) -> bool: ...
 
 
 class Leader:
     def __init__(self, store: LeaseStore, poller: Poller, *, config: LeaderConfig,
                  monotonic: Callable[[], float] = time.monotonic,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-                 call: Callable[..., Awaitable[Any]] = asyncio.to_thread) -> None:
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
         self._store = store
         self._poller = poller
         self._config = config
         self._monotonic = monotonic
         self._sleep = sleep
-        self._call = call
         self._leading = False
 
     @property
@@ -118,16 +123,21 @@ class Leader:
         while not stop.is_set():
             started = self._monotonic()
             try:
-                lease = await self._call(self._store.acquire, ROLE, holder=self._config.holder,
-                                         duration=self._config.lease)
+                lease = await self._store.acquire(ROLE, holder=self._config.holder,
+                                                  duration=self._config.lease)
             except Exception as error:  # noqa: BLE001 - a standby retries later
                 logger.warning("bot lease acquire failed: %s", type(error).__name__)
                 lease = None
             if lease is None:
                 await self._pause(stop, self._seconds(self._config.standby_retry))
                 continue
-            logger.info("bot lease taken; polling starts")
-            held = await self._lead(lease, started, stop)
+            if self._monotonic() >= self._deadline(started):
+                # The answer came too late to poll safely under this lease.
+                logger.warning("bot lease answered after its deadline; given back")
+                held = lease
+            else:
+                logger.info("bot lease taken; polling starts")
+                held = await self._lead(lease, started, stop)
             if held is not None:
                 await self._release(held)
             # After a lost lease or a failed start, stand by before trying again.
@@ -169,14 +179,15 @@ class Leader:
             lease, started, deadline = renewed, attempt, self._deadline(attempt)
 
     async def _renew_before(self, lease: Any, deadline: float) -> Any:
-        renewal = asyncio.ensure_future(self._call(self._store.renew, lease, duration=self._config.lease))
+        renewal = asyncio.ensure_future(self._store.renew(lease, duration=self._config.lease))
         timer = asyncio.ensure_future(self._sleep(max(0.0, deadline - self._monotonic())))
         try:
             await asyncio.wait({renewal, timer}, return_when=asyncio.FIRST_COMPLETED)
         finally:
             timer.cancel()
         if not renewal.done():
-            # The thread cannot be interrupted; its late answer no longer matters.
+            # Its late answer no longer matters; the request is abandoned.
+            renewal.cancel()
             renewal.add_done_callback(_discard)
             logger.warning("bot lease renewal did not answer before the deadline; polling stops")
             return None
@@ -188,7 +199,7 @@ class Leader:
 
     async def _release(self, lease: Any) -> None:
         try:
-            await self._call(self._store.release, lease)
+            await self._store.release(lease)
         except Exception as error:  # noqa: BLE001 - the lease then simply expires
             logger.warning("bot lease release failed: %s", type(error).__name__)
 

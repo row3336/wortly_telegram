@@ -190,7 +190,7 @@ async def answer_anything_else(update: Update, context: BotContext) -> None:
 async def note_contact(update: Update, context: BotContext) -> None:
     """Tell the core the user wrote; nothing here may keep the user from an answer."""
     try:
-        # The worker thread of a timed-out call may still finish later; its result is not needed.
+        # A timed-out call is cancelled with its HTTP request; its result is not needed.
         await asyncio.wait_for(context.gateway.note_contact(principal_of(update)), CONTACT_TIMEOUT)
     except Exception as error:  # noqa: BLE001 - best effort by design
         # The class only: the core's message may quote data (TC:273, T1).

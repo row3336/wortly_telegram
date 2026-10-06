@@ -1,65 +1,108 @@
-"""The core gateway, variant A of fork Р1: core calls in a worker thread, the subject from the update only."""
+"""The core gateway over the internal API (answer 2.4): each method's body, answer and subject.
+
+The core is FakeCore behind httpx.MockTransport (fakes/core_gateway.py); the HTTP rules
+themselves (secret, deadline, refusals) are tested in test_internal_client.py.
+"""
 
 from __future__ import annotations
 
-import threading
 from uuid import uuid4
 
+import httpx
 import pytest
 from telegram import Update
 
+from fakes.core_gateway import FakeCore, core_settings, forbid_network
 from fakes.telegram_api import callback_update, message_update, user
 from wortly.identity.principal import TelegramPrincipal
-from wortly_telegram.gateway import CoreGateway, principal_of
+from wortly_telegram.gateway import CoreUnavailable, HttpCoreGateway, HttpLeaseStore, build_gateway, principal_of
 
 
-class Admission:
-    """Stands in for wortly.identity.admission_adapter.AdmissionAdapter."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, TelegramPrincipal, dict, str]] = []
-
-    def _record(self, name, principal, arguments):
-        self.calls.append((name, principal, arguments, threading.current_thread().name))
-        return {"operation": name}
-
-    def profile_summary(self, principal):
-        return self._record("profile_summary", principal, {})
-
-    def note_contact(self, principal):
-        return self._record("note_contact", principal, {})
-
-    def decide_as(self, principal, **arguments):
-        return self._record("decide_as", principal, arguments)
-
-    def change_mode_as(self, principal, **arguments):
-        return self._record("change_mode_as", principal, arguments)
+PRINCIPAL = TelegramPrincipal("5005")
 
 
-async def test_core_calls_run_outside_the_event_loop_thread_and_pass_every_argument():
-    admission, principal = Admission(), TelegramPrincipal("5005")
-    gateway = CoreGateway(admission)
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    yield forbid_network(monkeypatch)
+
+
+@pytest.fixture
+def core() -> FakeCore:
+    return FakeCore()
+
+
+@pytest.fixture
+async def gateway(core):
+    current = build_gateway(core_settings(), transport=core.transport())
+    yield current
+    await current.aclose()
+
+
+async def test_each_method_posts_the_actor_and_its_arguments(core, gateway):
     command, request = uuid4(), uuid4()
-    assert await gateway.profile_summary(principal) == {"operation": "profile_summary"}
-    await gateway.decide(principal, command_id=command, request_id=request, expected_version=3, approve=False,
-                         reason="short")
-    await gateway.change_mode(principal, command_id=command, expected_version=7, mode="automatic")
-    names = [call[0] for call in admission.calls]
-    assert names == ["profile_summary", "decide_as", "change_mode_as"]
-    assert all(call[1] is principal for call in admission.calls)
-    assert admission.calls[1][2] == dict(command_id=command, request_id=request, expected_version=3,
-                                         approve=False, reason="short")
-    assert admission.calls[2][2] == dict(command_id=command, expected_version=7, mode="automatic")
-    # Each synchronous core call ran in a worker thread, never on the loop's thread.
-    assert all(call[3] != threading.current_thread().name for call in admission.calls)
+    assert await gateway.profile_summary(PRINCIPAL) is None
+    await gateway.note_contact(PRINCIPAL)
+    decided = await gateway.decide(PRINCIPAL, command_id=command, request_id=request, expected_version=3,
+                                   approve=False, reason="short")
+    assert decided["command"]["id"] == str(command)
+    await gateway.decide(PRINCIPAL, command_id=command, request_id=request, expected_version=3, approve=True,
+                         reason=None)
+    await gateway.change_mode(PRINCIPAL, command_id=command, expected_version=7, mode="automatic")
+    assert core.bodies("/internal/v1/admission/summary") == [{"actor_telegram_id": "5005"}]
+    assert core.bodies("/internal/v1/contact") == [{"actor_telegram_id": "5005"}]
+    assert core.bodies("/internal/v1/admission/decide") == [
+        {"actor_telegram_id": "5005", "command_id": str(command), "request_id": str(request),
+         "expected_version": "3", "approve": False, "reason": "short"},
+        # Without a reason the field is left out, as the core's schema makes it optional.
+        {"actor_telegram_id": "5005", "command_id": str(command), "request_id": str(request),
+         "expected_version": "3", "approve": True}]
+    assert core.bodies("/internal/v1/admission/change_mode") == [
+        {"actor_telegram_id": "5005", "command_id": str(command), "expected_version": "7", "mode": "automatic"}]
 
 
-async def test_note_contact_calls_the_core_in_a_worker_thread_with_the_principal():
-    admission, principal = Admission(), TelegramPrincipal("5005")
-    await CoreGateway(admission).note_contact(principal)
-    [(name, seen, arguments, thread)] = admission.calls
-    assert (name, seen, arguments) == ("note_contact", principal, {})
-    assert seen is principal and thread != threading.current_thread().name
+async def test_the_profile_summary_is_the_core_answer(core, gateway):
+    profile = {"role": "owner", "status": "admitted", "ui_language": None}
+    core.answer("/internal/v1/admission/summary", httpx.Response(200, json={"profile": profile}))
+    assert await gateway.profile_summary(PRINCIPAL) == profile
+
+
+@pytest.mark.parametrize("answer", [
+    {}, {"profile": None, "extra": 1}, {"profile": {"role": "admin", "status": "admitted", "ui_language": "uk"}},
+    {"profile": {"role": "owner", "status": "active", "ui_language": "uk"}},
+    {"profile": {"role": "owner", "status": "admitted", "ui_language": "de"}},
+    {"profile": {"role": "owner", "status": "admitted"}}, {"profile": "owner"}, [],
+])
+async def test_a_summary_outside_the_contract_is_core_unavailable(core, gateway, answer):
+    core.answer("/internal/v1/admission/summary", httpx.Response(200, json=answer))
+    with pytest.raises(CoreUnavailable):
+        await gateway.profile_summary(PRINCIPAL)
+
+
+@pytest.mark.parametrize("call", [
+    lambda gateway: gateway.profile_summary("5005"),
+    lambda gateway: gateway.note_contact(5005),
+    lambda gateway: gateway.decide(PRINCIPAL, command_id=uuid4(), request_id=uuid4(), expected_version="3",
+                                   approve=True, reason=None),
+    lambda gateway: gateway.decide(PRINCIPAL, command_id=uuid4(), request_id=uuid4(), expected_version=0,
+                                   approve=True, reason=None),
+    lambda gateway: gateway.decide(PRINCIPAL, command_id=uuid4(), request_id=uuid4(), expected_version=True,
+                                   approve=True, reason=None),
+    lambda gateway: gateway.decide(PRINCIPAL, command_id=uuid4(), request_id=uuid4(), expected_version=1,
+                                   approve="yes", reason=None),
+    lambda gateway: gateway.decide(PRINCIPAL, command_id="not-a-uuid", request_id=uuid4(), expected_version=1,
+                                   approve=True, reason=None),
+], ids=["principal-text", "principal-number", "version-text", "version-zero", "version-bool", "approve-text",
+        "command-id"])
+async def test_a_malformed_call_is_refused_before_the_core_is_asked(core, gateway, call):
+    with pytest.raises((TypeError, ValueError)):
+        await call(gateway)
+    assert core.requests == []
+
+
+def test_the_gateway_and_its_lease_store_share_one_client(core):
+    gateway = build_gateway(core_settings(), transport=core.transport())
+    assert isinstance(gateway, HttpCoreGateway) and isinstance(gateway.leases, HttpLeaseStore)
+    assert gateway.leases._client is gateway.client
 
 
 def test_the_principal_is_the_sender_of_the_update():
@@ -74,15 +117,3 @@ def test_an_update_without_a_sender_has_no_principal():
         "message_id": 1, "date": 0, "text": "x", "chat": {"id": -1001, "type": "channel", "title": "c"}}}, None)
     with pytest.raises(ValueError):
         principal_of(channel_post)
-
-
-def test_build_gateway_wires_the_core_admission_adapter():
-    pytest.importorskip("psycopg")
-    from datetime import datetime, timedelta, timezone
-
-    from wortly.identity.admission_adapter import AdmissionAdapter
-    from wortly_telegram.gateway import build_gateway
-
-    gateway = build_gateway(lambda: None, clock=lambda: datetime.now(timezone.utc),
-                            session_lifetime=timedelta(hours=1))
-    assert isinstance(gateway._admission, AdmissionAdapter)

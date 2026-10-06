@@ -1,0 +1,44 @@
+# Sample configuration of the bot role: python -m wortly_telegram.bot_main --config <file>.
+# Every key is required and an unknown key stops the start. All values below are
+# placeholders, not the deployment policy (G08/Q3): the owner chooses them.
+# The bot opens no database: there is no [database] and no [access] table (answers 2.4, 2.7а).
+# Secrets never go into this file; the two *_file keys name files with mode 0600,
+# owned by the user running the bot, holding one line each.
+
+[bot]
+# Name of this bot instance in the poller's lease; unique per running process.
+instance = "bot-example-1"
+# L of the poller's lease; it is renewed every L/3.
+leader_lease_seconds = 60
+# Polling stops this long before the lease can expire. It must exceed the sum of the
+# [telegram] timeouts and the sum of the [core] timeouts, and be shorter than 2/3 of L.
+# The three values are tied: [core] connect + read < stop_margin_seconds, and
+# [core] connect + read < leader_lease_seconds - stop_margin_seconds; otherwise a slow
+# answer to taking the lease comes after its deadline and the bot never polls.
+stop_margin_seconds = 35
+# A standby instance tries to take the lease this often.
+standby_retry_seconds = 10
+# Long-poll timeout of getUpdates.
+poll_timeout_seconds = 25
+
+[core]
+# Address of the core's internal listener: [internal] host and port of the api configuration.
+# Scheme, host and port only: no path and no trailing "/".
+internal_url = "http://127.0.0.1:8001"
+# Absolute path of the file with the same service secret as the api's
+# internal.service_secret_file: one line of printable ASCII.
+service_secret_file = "/path/to/wortly/service_secret"
+# Seconds to wait for a connection to the core and for its answer; their sum is the
+# deadline of one call.
+connect_timeout_seconds = 5
+read_timeout_seconds = 10
+
+[telegram]
+# Absolute path of the file with the bot token on a single line.
+bot_token_file = "/path/to/wortly/bot_token"
+# https address of the Mini App, opened by the bot's button.
+web_app_url = "https://app.example.test/"
+connect_timeout_seconds = 5
+read_timeout_seconds = 10
+write_timeout_seconds = 10
+pool_timeout_seconds = 5

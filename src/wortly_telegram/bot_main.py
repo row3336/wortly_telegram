@@ -7,10 +7,10 @@ the process does not start. On SIGTERM or SIGINT polling stops (PTB confirms the
 fetched updates), the lease is released, queued updates are finished, and the process
 ends (§2.4.4).
 
-Variant A of fork Р1 (until Q28): the bot reaches the core through gateway.py on its
-own writable-leader connections, each with a lock_timeout so a stuck lock holder
-cannot stall the bot forever. Everything runs inside private_logs (logs.py). The core
-is imported inside the functions that start the process.
+Variant Б of fork Р1 (answer 2.4): the bot opens no database and imports no database
+driver. It reaches the core, the admission operations and the poller's lease alike,
+only through the core's internal API (gateway.py, one client, closed on exit).
+Everything runs inside private_logs (logs.py), which also hides the service secret.
 """
 
 from __future__ import annotations
@@ -85,27 +85,25 @@ async def _serve(settings, *, gateway, leases) -> int:
     return 0
 
 
-def serve(settings) -> int:
-    from wortly.jobs.leases import LeaseStore
-    from wortly.jobs.worker import utc_now
-    from wortly.operations.connections import lock_timeout_connections, open_connection_pool
-
+async def _run(settings) -> int:
     from .gateway import build_gateway
 
-    pool = open_connection_pool(settings.database, name="wortly-bot")
+    gateway = build_gateway(settings.core)
     try:
-        connections = lock_timeout_connections(pool.connection, settings.lock_timeout)
-        gateway = build_gateway(connections, clock=utc_now, session_lifetime=settings.session_lifetime)
-        return asyncio.run(_serve(settings, gateway=gateway, leases=LeaseStore(connections)))
+        return await _serve(settings, gateway=gateway, leases=gateway.leases)
     finally:
-        pool.close()
+        await gateway.aclose()
+
+
+def serve(settings) -> int:
+    return asyncio.run(_run(settings))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    from wortly.operations.config import ConfigurationError
+    from wortly.operations.log_privacy import token_forms
 
-    from .config import load_bot_settings
-    from .logs import log_secrets, private_logs
+    from .config import BotConfigurationError, load_bot_settings
+    from .logs import private_logs
     from .router import RouterError
 
     parser = argparse.ArgumentParser(prog="python -m wortly_telegram.bot_main",
@@ -114,10 +112,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     try:
         settings = load_bot_settings(arguments.config)
-    except ConfigurationError as error:
+    except BotConfigurationError as error:
         print(f"wortly bot: configuration error: {error}", file=sys.stderr)
         return 2
-    with private_logs(log_secrets(settings.telegram.bot_token, settings.database)):
+    # The bot holds two secrets: the token in every written form and the service secret.
+    with private_logs((*token_forms(settings.telegram.bot_token), settings.core.service_secret)):
         try:
             return serve(settings)
         except RouterError as error:
