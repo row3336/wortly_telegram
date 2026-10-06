@@ -9,7 +9,7 @@ transaction (§3.6).
 The services are imported inside ``build_gateway``, never at module level: handlers
 import this module and must load without psycopg (finding Н2, §9.5). If Q28 is
 answered "only through the API", this module alone changes: CoreGateway becomes a
-client of the core's internal routes with the same three methods.
+client of the core's internal routes with the same four methods.
 
 Subject (§1.2, QA C-ADAPTER): ``principal_of`` builds the TelegramPrincipal from
 ``update.effective_user.id`` of an update this bot's poller received, never from
@@ -40,7 +40,7 @@ def principal_of(update: Update) -> TelegramPrincipal:
 
 
 class CoreGateway:
-    """Owner operations and the profile summary of the core's AdmissionAdapter."""
+    """Owner operations, the profile summary and the contact note of the core's AdmissionAdapter."""
 
     def __init__(self, admission: Any, *,
                  call: Callable[..., Awaitable[Any]] = asyncio.to_thread) -> None:
@@ -50,6 +50,14 @@ class CoreGateway:
     async def profile_summary(self, principal: TelegramPrincipal) -> dict | None:
         """Role, status ("admitted" when active) and interface language; None without a profile."""
         return await self._call(self._admission.profile_summary, principal)
+
+    async def note_contact(self, principal: TelegramPrincipal) -> None:
+        """The principal wrote to the bot: lift its "bot blocked" mark, if any (answer 2.5).
+
+        Idempotent and needs no admission. T-GW-HTTP moves this call to the core's internal
+        route together with the other methods; the bot's behaviour does not depend on it.
+        """
+        await self._call(self._admission.note_contact, principal)
 
     async def decide(self, principal: TelegramPrincipal, *, command_id: UUID, request_id: UUID,
                      expected_version: int, approve: bool, reason: str | None) -> Any:

@@ -25,6 +25,8 @@ class FakeCoreGateway:
         self.calls: list[GatewayCall] = []
         self.error: Exception | None = None
         self.result: Any = None
+        # Principals whose "bot blocked" mark the core still holds; a contact lifts it.
+        self.blocked: set[str] = set()
 
     def _record(self, operation: str, principal: TelegramPrincipal, **arguments: Any) -> None:
         if not isinstance(principal, TelegramPrincipal):
@@ -36,6 +38,10 @@ class FakeCoreGateway:
     async def profile_summary(self, principal: TelegramPrincipal) -> dict | None:
         self._record("profile_summary", principal)
         return self.summaries.get(principal.external_id)
+
+    async def note_contact(self, principal: TelegramPrincipal) -> None:
+        self._record("note_contact", principal)
+        self.blocked.discard(principal.external_id)
 
     async def decide(self, principal: TelegramPrincipal, **arguments: Any) -> Any:
         self._record("decide", principal, **arguments)

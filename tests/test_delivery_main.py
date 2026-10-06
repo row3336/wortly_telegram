@@ -13,7 +13,9 @@ import pytest
 
 from conftest import TELEGRAM_SETTINGS
 from wortly.jobs.kinds import discover as discover_kinds
-from wortly_telegram.delivery.main import DeliveryGate, StartError, _deliver, checked_kinds, loop_runner
+from wortly_telegram.delivery.main import (
+    DeliveryGate, StartError, _deliver, checked_kinds, checked_readiness, loop_runner, serve,
+)
 from wortly_telegram.messages.registry import TemplateRegistry, discover
 
 
@@ -85,6 +87,54 @@ def test_the_start_check_refuses_a_kind_without_a_retry_rule():
     renamed = type(template)("brand_new_kind", template.render, template.examples)
     with pytest.raises(StartError, match="retry rule"):
         checked_kinds(frozenset({"brand_new_kind"}), TemplateRegistry([renamed]))
+
+
+class FakeRepository:
+    """Stands for JobRepository: answers which unfinished jobs have a kind outside the given ones."""
+
+    def __init__(self, waiting: frozenset[str] = frozenset()) -> None:
+        self.waiting = waiting
+        self.asked: list[frozenset[str]] = []
+
+    def unserved_kinds(self, kinds) -> frozenset[str]:
+        self.asked.append(frozenset(kinds))
+        return self.waiting - frozenset(kinds)
+
+
+def test_the_process_is_ready_without_jobs_of_unknown_kinds():
+    kinds = discover_kinds().names
+    repository = FakeRepository(waiting=frozenset(kinds))
+    checked_readiness(kinds, repository)
+    assert repository.asked == [kinds]
+
+
+def test_a_job_of_an_unknown_kind_makes_the_process_not_ready():
+    repository = FakeRepository(waiting=frozenset({"brand_new_kind", "access_approved"}))
+    with pytest.raises(StartError, match="brand_new_kind") as raised:
+        checked_readiness(discover_kinds().names, repository)
+    assert "access_approved" not in str(raised.value)
+
+
+def test_serve_does_not_start_with_a_job_of_an_unknown_kind(monkeypatch):
+    from wortly_telegram.delivery import main
+
+    async def never_reached(*args, **kwargs):
+        # A broken readiness check would get here, to the bot's getMe and the network.
+        raise AssertionError("the delivery must not start")
+
+    monkeypatch.setattr(main, "_deliver", never_reached)
+    repository = FakeRepository(waiting=frozenset({"brand_new_kind"}))
+    closed = []
+    pool = SimpleNamespace(connection=None, close=lambda: closed.append(True))
+    monkeypatch.setitem(sys.modules, "wortly.jobs.repository",
+                        SimpleNamespace(JobRepository=lambda connections: repository))
+    monkeypatch.setitem(sys.modules, "wortly.operations.connections", SimpleNamespace(
+        lock_timeout_connections=lambda connection, timeout: None, open_connection_pool=lambda *a, **k: pool))
+    settings = SimpleNamespace(database=None, lock_timeout=None, telegram=TELEGRAM_SETTINGS)
+    with pytest.raises(StartError, match="brand_new_kind"):
+        serve(settings)
+    assert repository.asked == [discover_kinds().names]
+    assert closed == [True]  # the pool is released when the start is refused
 
 
 class SlowToFinish:

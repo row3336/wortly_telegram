@@ -31,7 +31,9 @@ from wortly.storage import apply_migrations  # noqa: E402
 from wortly_telegram.app import make_bot  # noqa: E402
 from wortly_telegram.delivery.capacity import TelegramCapacity  # noqa: E402
 from wortly_telegram.delivery.channel import TelegramChannel  # noqa: E402
-from wortly_telegram.delivery.main import DeliveryGate, loop_runner  # noqa: E402
+from wortly_telegram.delivery.main import (  # noqa: E402
+    DeliveryGate, StartError, checked_readiness, loop_runner,
+)
 from wortly_telegram.messages.registry import discover as discover_templates  # noqa: E402
 
 
@@ -144,14 +146,44 @@ def test_rate_limited_is_known_failed_with_retry_not_before(database, telegram, 
     assert len(telegram.calls_to("sendMessage")) == 1
 
 
-def test_blocked_is_known_failed_after_the_delay(database, telegram, delivery):
+def test_a_confirmed_block_closes_the_job_and_marks_the_recipient(database, telegram, delivery):
+    # Before answer 2.5 any 403 was "blocked" and repeated after the delay; now the
+    # confirmed block is final and leaves the mark that a later message lifts.
     make, stop = delivery
     loop, repository, _ = make()
     profile, request = approved_recipient(database)
     job = enqueue(database, repository, profile, request)
     telegram.fail("sendMessage", 403, "Forbidden: bot was blocked by the user")
     loop.run_once(stop)
-    assert state(database, job) == (("ready", NOW + D), [("known_failed", "blocked")])
+    assert state(database, job) == (("failed", None), [("known_failed", "blocked")])
+    with database() as db:
+        assert db.execute("SELECT count(*) FROM telegram_blocks WHERE profile_id=%s",
+                          (profile,)).fetchone()[0] == 1
+
+
+def test_another_403_is_repeated_after_the_delay_and_leaves_no_mark(database, telegram, delivery):
+    make, stop = delivery
+    loop, repository, _ = make()
+    profile, request = approved_recipient(database)
+    job = enqueue(database, repository, profile, request)
+    telegram.fail("sendMessage", 403, "Forbidden: bot can't initiate conversation with a user")
+    loop.run_once(stop)
+    assert state(database, job) == (("ready", NOW + D), [("known_failed", "forbidden")])
+    with database() as db:
+        assert db.execute("SELECT count(*) FROM telegram_blocks WHERE profile_id=%s",
+                          (profile,)).fetchone()[0] == 0
+
+
+def test_a_job_of_a_kind_without_a_builder_makes_the_process_not_ready(database):
+    repository = JobRepository(database, clock=lambda: NOW)
+    kinds = discover_kinds().names
+    checked_readiness(kinds, repository)
+    profile, _ = approved_recipient(database)
+    with database() as db, db.transaction():
+        repository.enqueue(db, logical_key="future_kind:1", profile_id=profile, kind="future_kind",
+                           available_at=NOW, payload={})
+    with pytest.raises(StartError, match="future_kind"):
+        checked_readiness(kinds, repository)
 
 
 def test_unknown_is_final_and_never_sent_again(database, telegram, delivery):

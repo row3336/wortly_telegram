@@ -8,7 +8,8 @@ synchronous channel hands each send to the main loop with
 own, the HTTPXRequest timeouts bound it.
 
 Start: the configuration is complete; every job kind of the core has a builder, a
-retry rule (checked by DeliveryLoop) and a template here; getMe accepts the token
+retry rule (checked by DeliveryLoop) and a template here; no unfinished job waits for a
+kind without a builder (JobRepository.unserved_kinds); getMe accepts the token
 (design §2.3). Otherwise the process does not start. While running, an InvalidToken
 answer closes the gate: no further job is claimed until the process is restarted.
 Stopping (SIGTERM, SIGINT) takes no new claim and lets the current attempt finish
@@ -94,6 +95,16 @@ def checked_kinds(kinds: frozenset[str], templates) -> None:
             raise StartError(f"job kind {kind} has no retry rule") from None
 
 
+def checked_readiness(kinds: frozenset[str], repository) -> None:
+    """Ready only while no unfinished job waits for a kind this release cannot build (design §2.3, §3.8 п.6).
+
+    The core's loop leaves such a job unclaimed, so nothing else would ever show it.
+    """
+    unserved = repository.unserved_kinds(kinds)
+    if unserved:
+        raise StartError("unfinished jobs of kinds without a builder: " + ", ".join(sorted(unserved)))
+
+
 async def _deliver(settings, *, kinds, templates, repository) -> int:
     from wortly.jobs.loop import DeliveryLoop
 
@@ -143,6 +154,7 @@ def serve(settings) -> int:
     pool = open_connection_pool(settings.database, name="wortly-delivery")
     try:
         repository = JobRepository(lock_timeout_connections(pool.connection, settings.lock_timeout))
+        checked_readiness(kinds.names, repository)
         return asyncio.run(_deliver(settings, kinds=kinds, templates=templates, repository=repository))
     finally:
         pool.close()

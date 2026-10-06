@@ -26,6 +26,9 @@ class Admission:
     def profile_summary(self, principal):
         return self._record("profile_summary", principal, {})
 
+    def note_contact(self, principal):
+        return self._record("note_contact", principal, {})
+
     def decide_as(self, principal, **arguments):
         return self._record("decide_as", principal, arguments)
 
@@ -49,6 +52,14 @@ async def test_core_calls_run_outside_the_event_loop_thread_and_pass_every_argum
     assert admission.calls[2][2] == dict(command_id=command, expected_version=7, mode="automatic")
     # Each synchronous core call ran in a worker thread, never on the loop's thread.
     assert all(call[3] != threading.current_thread().name for call in admission.calls)
+
+
+async def test_note_contact_calls_the_core_in_a_worker_thread_with_the_principal():
+    admission, principal = Admission(), TelegramPrincipal("5005")
+    await CoreGateway(admission).note_contact(principal)
+    [(name, seen, arguments, thread)] = admission.calls
+    assert (name, seen, arguments) == ("note_contact", principal, {})
+    assert seen is principal and thread != threading.current_thread().name
 
 
 def test_the_principal_is_the_sender_of_the_update():

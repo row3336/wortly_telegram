@@ -43,9 +43,9 @@ async def test_a_non_https_address_stops_the_build(telegram, gateway):
 async def test_the_subject_is_the_sender_of_the_update(telegram, gateway, make_application):
     application = await make_application()
     await feed(application, message_update("/start 99999", from_user=user(5005), chat_id=5005))
-    [call] = gateway.calls
-    assert call.operation == "profile_summary"
-    assert call.principal.external_id == "5005"
+    # Every private message is also a contact note (answer 2.5); both carry the sender.
+    assert [call.operation for call in gateway.calls] == ["note_contact", "profile_summary"]
+    assert {call.principal.external_id for call in gateway.calls} == {"5005"}
 
 
 @pytest.mark.parametrize(("summary", "client", "expected"), [

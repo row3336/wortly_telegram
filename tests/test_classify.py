@@ -42,6 +42,12 @@ ROWS = [
     ("404", lambda t: t.fail("sendMessage", 404, "Not Found"), "known_failed", "channel_config"),
     ("403", lambda t: t.fail("sendMessage", 403, "Forbidden: bot was blocked by the user"),
      "known_failed", "blocked"),
+    # Only the confirmed block closes a job (answer 2.5); every other 403 stays repeatable.
+    ("403-not-started", lambda t: t.fail("sendMessage", 403, "Forbidden: bot can't initiate conversation with a user"),
+     "known_failed", "forbidden"),
+    ("403-deactivated", lambda t: t.fail("sendMessage", 403, "Forbidden: user is deactivated"),
+     "known_failed", "forbidden"),
+    ("403-bare", lambda t: t.fail("sendMessage", 403, "Forbidden"), "known_failed", "forbidden"),
     ("400", lambda t: t.fail("sendMessage", 400, "Bad Request: chat not found"), "known_failed", "rejected"),
     ("400-chat-migrated", lambda t: t.fail("sendMessage", 400, "migrated", migrate_to_chat_id=-100123),
      "known_failed", "rejected"),
@@ -99,7 +105,9 @@ def never_left_cause() -> httpx.ConnectError:
 # the transport cause, "never left" comes next, everything else is unknown.
 ORDER = [
     ("retry-after-over-cause", lambda: caused(RetryAfter(5), never_left_cause()), ("known_failed", "rate_limited")),
-    ("forbidden-over-cause", lambda: caused(Forbidden("f"), never_left_cause()), ("known_failed", "blocked")),
+    ("blocked-over-cause", lambda: caused(Forbidden("Forbidden: bot was blocked by the user"), never_left_cause()),
+     ("known_failed", "blocked")),
+    ("forbidden-over-cause", lambda: caused(Forbidden("f"), never_left_cause()), ("known_failed", "forbidden")),
     ("migrated-over-cause", lambda: caused(ChatMigrated(-100), never_left_cause()), ("known_failed", "rejected")),
     ("bad-request-over-cause", lambda: caused(BadRequest("b"), never_left_cause()), ("known_failed", "rejected")),
     ("invalid-token-over-cause", lambda: caused(InvalidToken("i"), never_left_cause()),
@@ -123,3 +131,21 @@ ORDER = [
 def test_the_order_of_the_checks(make, expected):
     result = classify(make())
     assert (result.outcome, result.reason) == expected
+
+
+@pytest.mark.parametrize("message", [
+    "Forbidden: bot was blocked by the user",
+    "forbidden: BOT WAS BLOCKED BY THE USER",
+    "bot was blocked by the user",
+])
+def test_the_blocked_marker_is_the_confirmed_block_whatever_the_case(message):
+    assert classify(Forbidden(message)).reason == "blocked"
+
+
+@pytest.mark.parametrize("message", [
+    "Forbidden: bot was kicked from the group chat",
+    "Forbidden: the bot was blocked",
+    "",
+])
+def test_an_unknown_403_text_is_not_a_confirmed_block(message):
+    assert classify(Forbidden(message)).reason == "forbidden"

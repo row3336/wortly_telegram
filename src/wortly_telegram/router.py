@@ -17,6 +17,14 @@ declaration, a command or callback prefix claimed twice stops the start.
 - ``command_id`` is derived from the update itself (ВП-6), so the same update
   delivered twice (two pollers, a restart) is the same command for the core.
 
+Contact (answer 2.5): any private message or button press of a user proves the bot is not
+blocked, so the first handler of every such update (handler group -1, before the service
+functions and the default answer) calls ``gateway.note_contact`` exactly once. The call is
+best effort: a failure or a timeout (CONTACT_TIMEOUT) is logged by class only and never stops
+the answer to the user.
+Which events count as "wrote again" is the owner's open question 2.28б; until it is
+answered, every private message and button press counts.
+
 Default handler — temporary rule ВП-27 until the owner answers Q23: any other text,
 an old command (/undo) or an unknown button gets the /start answer, a short text with
 the Mini App button (the old bot's handler of orphaned text, R-TG 1.03, led to /start
@@ -37,7 +45,9 @@ from typing import Any, Literal, Protocol
 from uuid import UUID, uuid5
 
 from telegram import Bot, Update
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, TypeHandler, filters,
+)
 
 from .gateway import principal_of
 from .reply import send_reply
@@ -51,6 +61,10 @@ ADMISSION_MODULES = ("wortly_telegram.access", "wortly_telegram.access_owner")
 # What the poller asks Telegram for: exactly the update types handled below (ВП-6).
 ALLOWED_UPDATES = ("message", "callback_query")
 
+# PTB handles updates one at a time, so a hanging core call would hold the whole bot;
+# the contact note is best effort and is given up after this many seconds.
+CONTACT_TIMEOUT = 2.0
+
 # Fixed for good: the same update must give the same command_id in every release.
 COMMAND_NAMESPACE = UUID("34f1fd3d-1a7a-4b83-983e-b6478ea6bbc1")
 
@@ -60,6 +74,8 @@ _PREFIX = re.compile(r"[a-z][a-z0-9_]{0,15}")
 
 
 class Gateway(Protocol):
+    async def note_contact(self, principal: Any) -> None: ...
+
     async def profile_summary(self, principal: Any) -> dict | None: ...
 
 
@@ -171,13 +187,23 @@ async def answer_anything_else(update: Update, context: BotContext) -> None:
     await send_start(update, context)
 
 
+async def note_contact(update: Update, context: BotContext) -> None:
+    """Tell the core the user wrote; nothing here may keep the user from an answer."""
+    try:
+        # The worker thread of a timed-out call may still finish later; its result is not needed.
+        await asyncio.wait_for(context.gateway.note_contact(principal_of(update)), CONTACT_TIMEOUT)
+    except Exception as error:  # noqa: BLE001 - best effort by design
+        # The class only: the core's message may quote data (TC:273, T1).
+        logger.warning("note_contact failed: %s", type(error).__name__)
+
+
 def _private(update: Update) -> bool:
     chat = update.effective_chat
     return chat is not None and chat.type == chat.PRIVATE
 
 
 def install(application: Application, context: BotContext, functions: Sequence[ServiceFunction]) -> None:
-    """Register /start, the service functions and, last, the default handler."""
+    """Register the contact note (group -1), /start, the service functions and, last, the default handler."""
     functions = (START, *functions)
     _checked(functions)
     new_private_message = filters.ChatType.PRIVATE & filters.UpdateType.MESSAGE
@@ -191,6 +217,13 @@ def install(application: Application, context: BotContext, functions: Sequence[S
             else:
                 await answer_anything_else(update, context)
         return callback
+
+    async def contact(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+        if _private(update) and (update.message is not None or update.callback_query is not None):
+            await note_contact(update, context)
+
+    # Group -1 runs before the default group 0 and does not stop it: one call per update.
+    application.add_handler(TypeHandler(Update, contact), group=-1)
 
     for function in functions:
         if function.commands:
