@@ -1,9 +1,8 @@
 """Which code answers an update: service functions, /start and the default handler (design T-D §7.1, §6).
 
 Service functions are found automatically (ВП-21): every module of
-wortly_telegram.service declares ``SERVICE_FUNCTIONS``; the admission modules of T2
-(wortly_telegram.access, wortly_telegram.access_owner) may declare them as well. A
-package adds a module and edits no shared list. A service module without the
+wortly_telegram.service declares ``SERVICE_FUNCTIONS`` (the owner's admission of T2 is
+wortly_telegram.service.access). A package adds a module and edits no shared list. A service module without the
 declaration, a command or callback prefix claimed twice stops the start.
 
 - Only private chats are served: Telegram accepts a web_app button only there.
@@ -25,6 +24,14 @@ the answer to the user.
 Which events count as "wrote again" is the owner's open question 2.28б; until it is
 answered, every private message and button press counts.
 
+Text input (T2, answer 2.6 б): a service function may claim the next plain text of a
+chat with ``text_input`` (the owner's reason for a rejection). The router hands a plain
+text, not a command, to the first function whose input waits for that chat and whose
+audience still admits the sender; otherwise the default answer follows. Every command
+and every button press of a private chat first cancels each waiting input (handler group
+-2), before any handler runs: until the owner answers Q55 a command or a button ends the
+input. A function's own button then starts a new one in its handler.
+
 Default handler — temporary rule ВП-27 until the owner answers Q23: any other text,
 an old command (/undo) or an unknown button gets the /start answer, a short text with
 the Mini App button (the old bot's handler of orphaned text, R-TG 1.03, led to /start
@@ -34,10 +41,9 @@ too). After Q23 only ``answer_anything_else`` in this module changes.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from importlib import import_module
-from importlib.util import find_spec
 import logging
 import pkgutil
 import re
@@ -57,7 +63,6 @@ from .start import send_start
 logger = logging.getLogger(__name__)
 
 SERVICE_PACKAGE = "wortly_telegram.service"
-ADMISSION_MODULES = ("wortly_telegram.access", "wortly_telegram.access_owner")
 # What the poller asks Telegram for: exactly the update types handled below (ВП-6).
 ALLOWED_UPDATES = ("message", "callback_query")
 
@@ -93,12 +98,31 @@ Handle = Callable[[Update, BotContext], Awaitable[None]]
 
 
 @dataclass(frozen=True)
+class TextInput:
+    """A function's claim on the next plain text of a chat (design T-D §5.2 Р5).
+
+    ``waiting(update)`` tells, without the core, whether this sender's chat waits for
+    text; ``handle`` takes that text; ``cancel(update)`` drops the chat's input. The state
+    lives in the function's own module, in the bot process's memory.
+    """
+
+    waiting: Callable[[Update], bool]
+    handle: Handle
+    cancel: Callable[[Update], None]
+
+    def __post_init__(self) -> None:
+        if not (callable(self.waiting) and callable(self.handle) and callable(self.cancel)):
+            raise ValueError("A text input needs waiting, handle and cancel callables")
+
+
+@dataclass(frozen=True)
 class ServiceFunction:
     name: str
     commands: tuple[str, ...]
     callback_prefix: str | None
     audience: Audience
     handle: Handle
+    text_input: TextInput | None = None
 
     def __post_init__(self) -> None:
         if type(self.name) is not str or not self.name.strip():
@@ -115,6 +139,8 @@ class ServiceFunction:
             raise ValueError(f"Service function {self.name!r} has an unknown audience")
         if not callable(self.handle):
             raise ValueError(f"Service function {self.name!r} needs a handler")
+        if self.text_input is not None and not isinstance(self.text_input, TextInput):
+            raise ValueError(f"Service function {self.name!r} has an invalid text input")
 
 
 class RouterError(RuntimeError):
@@ -133,26 +159,20 @@ def command_id(update: Update) -> UUID:
     raise ValueError("Only a new message or a button press is a command")
 
 
-def _declared(module: Any, *, required: bool) -> tuple[ServiceFunction, ...]:
+def _declared(module: Any) -> tuple[ServiceFunction, ...]:
     functions = getattr(module, "SERVICE_FUNCTIONS", None)
-    if functions is None and not required:
-        return ()
     if not isinstance(functions, tuple) or not all(isinstance(item, ServiceFunction) for item in functions):
         raise RouterError(f"Module {module.__name__} declares no SERVICE_FUNCTIONS tuple")
     return functions
 
 
-def discover(package: str = SERVICE_PACKAGE,
-             admission_modules: Iterable[str] = ADMISSION_MODULES) -> tuple[ServiceFunction, ...]:
-    """Collect the service functions of ``package`` and of the admission modules present."""
+def discover(package: str = SERVICE_PACKAGE) -> tuple[ServiceFunction, ...]:
+    """Collect the service functions of ``package``."""
     functions: list[ServiceFunction] = []
     root = import_module(package)
     for module in sorted(pkgutil.iter_modules(root.__path__), key=lambda item: item.name):
         if not module.name.startswith("_"):
-            functions.extend(_declared(import_module(f"{package}.{module.name}"), required=True))
-    for name in admission_modules:
-        if find_spec(name) is not None:
-            functions.extend(_declared(import_module(name), required=False))
+            functions.extend(_declared(import_module(f"{package}.{module.name}")))
     return tuple(functions)
 
 
@@ -202,6 +222,28 @@ def _private(update: Update) -> bool:
     return chat is not None and chat.type == chat.PRIVATE
 
 
+def _command_or_button(update: Update) -> bool:
+    return update.callback_query is not None or (
+        update.message is not None and bool(filters.COMMAND.check_update(update)))
+
+
+async def take_text(update: Update, context: BotContext, functions: Sequence[ServiceFunction]) -> bool:
+    """Hand a plain text to the function whose input waits for it; False when none takes it."""
+    if update.message is None or filters.COMMAND.check_update(update):
+        return False
+    for function in functions:
+        text_input = function.text_input
+        if text_input is None or not text_input.waiting(update):
+            continue
+        if not await _admits(function, update, context):
+            # The sender lost the audience since the input began: the input ends here.
+            text_input.cancel(update)
+            return False
+        await text_input.handle(update, context)
+        return True
+    return False
+
+
 def install(application: Application, context: BotContext, functions: Sequence[ServiceFunction]) -> None:
     """Register the contact note (group -1), /start, the service functions and, last, the default handler."""
     functions = (START, *functions)
@@ -222,7 +264,14 @@ def install(application: Application, context: BotContext, functions: Sequence[S
         if _private(update) and (update.message is not None or update.callback_query is not None):
             await note_contact(update, context)
 
-    # Group -1 runs before the default group 0 and does not stop it: one call per update.
+    async def interrupt(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+        if _private(update) and _command_or_button(update):
+            for function in functions:
+                if function.text_input is not None:
+                    function.text_input.cancel(update)
+
+    # Groups -2 and -1 run before the default group 0 and do not stop it: one call per update.
+    application.add_handler(TypeHandler(Update, interrupt), group=-2)
     application.add_handler(TypeHandler(Update, contact), group=-1)
 
     for function in functions:
@@ -233,7 +282,7 @@ def install(application: Application, context: BotContext, functions: Sequence[S
             application.add_handler(CallbackQueryHandler(run(function), pattern=pattern))
 
     async def anything_else(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-        if _private(update):
+        if _private(update) and not await take_text(update, context, functions):
             await answer_anything_else(update, context)
 
     application.add_handler(MessageHandler(new_private_message & filters.TEXT, anything_else))

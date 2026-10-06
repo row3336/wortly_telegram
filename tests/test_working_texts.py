@@ -16,6 +16,22 @@ WORKING_TEXTS = (
     ("webapp.py", "BUTTON_LABELS"),
     ("messages/access_approved.py", "TEXTS"),
     ("messages/inbox_message.py", "HEADINGS"),
+    ("messages/access_request.py", "REQUESTS_ACCESS"),
+    ("messages/access_request.py", "APPROVE_LABELS"),
+    ("messages/access_request.py", "REJECT_LABELS"),
+    ("messages/access_request.py", "REJECT_WITH_REASON_LABELS"),
+    ("messages/access_reminder.py", "PENDING_DECISION"),
+    ("messages/access_reminder.py", "SHOW_REQUESTS_LABELS"),
+    ("service/access.py", "APPROVED"),
+    ("service/access.py", "REJECTED"),
+    ("service/access.py", "ALREADY_HANDLED"),
+    ("service/access.py", "NO_PENDING"),
+    ("service/access.py", "REASON_PROMPT"),
+    ("service/access.py", "REASON_TOO_LONG"),
+    ("service/access.py", "REASON_REFUSED"),
+    ("service/access.py", "REASON_LINE"),
+    ("service/access.py", "FORBIDDEN"),
+    ("service/access.py", "TRY_LATER"),
 )
 
 
@@ -35,4 +51,12 @@ def test_the_constant_with_a_working_text_follows_the_mark(module, constant):
 def test_no_other_module_marks_a_working_text():
     marked = sorted(path.relative_to(SRC).as_posix() for path in SRC.rglob("*.py")
                     if MARK in path.read_text(encoding="utf-8"))
-    assert marked == sorted(module for module, _ in WORKING_TEXTS)
+    assert marked == sorted({module for module, _ in WORKING_TEXTS})
+
+
+def test_every_mark_names_one_constant():
+    # З9 of QA T1: one mark per constant, so no text hides under another constant's mark.
+    for module in {module for module, _ in WORKING_TEXTS}:
+        constants = {constant for name, constant in WORKING_TEXTS if name == module}
+        marks = (SRC / module).read_text(encoding="utf-8").count(MARK)
+        assert marks == len(constants), module

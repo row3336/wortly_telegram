@@ -30,7 +30,7 @@ from wortly.jobs.channel import SENT, ChannelResult
 from wortly.jobs.models import DeliverySnapshot
 
 from ..messages.registry import TemplateRegistry
-from ..webapp import launch_keyboard
+from ..webapp import keyboard
 from .classify import PRE_SEND_ERROR, classify
 
 
@@ -59,8 +59,7 @@ class TelegramChannel:
     def deliver(self, snapshot: DeliverySnapshot) -> ChannelResult:
         try:
             prepared = self._templates.prepare(snapshot.context.kind, snapshot.facts.facts_json)
-            markup = (launch_keyboard(self._web_app_url, prepared.language)
-                      if prepared.message.app_button else None)
+            markup = keyboard(prepared.message, self._web_app_url, prepared.language)
         except Exception as error:  # noqa: BLE001 - every fault here precedes the network
             logger.warning("delivery not formatted: %s", type(error).__name__)
             return PRE_SEND_ERROR

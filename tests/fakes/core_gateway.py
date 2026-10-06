@@ -22,6 +22,11 @@ import httpx
 
 from wortly.identity.principal import TelegramPrincipal
 from wortly_telegram.config import CoreSettings
+from wortly_telegram.gateway import CoreError, PendingRequest
+
+
+# The core's bound of a rejection reason, in code points (identity/service.py, C-ADAPTER-3).
+REASON_MAX_CHARACTERS = 500
 
 
 @dataclass(frozen=True)
@@ -36,9 +41,13 @@ class FakeCoreGateway:
         self.summaries = dict(summaries or {})
         self.calls: list[GatewayCall] = []
         self.error: Exception | None = None
+        # An error raised by one operation only, e.g. {"decide": CoreError(...)}.
+        self.errors: dict[str, Exception] = {}
         self.result: Any = None
         # Principals whose "bot blocked" mark the core still holds; a contact lifts it.
         self.blocked: set[str] = set()
+        # What pending_requests answers, oldest first.
+        self.pending: list[PendingRequest] = []
 
     def _record(self, operation: str, principal: TelegramPrincipal, **arguments: Any) -> None:
         if not isinstance(principal, TelegramPrincipal):
@@ -46,6 +55,8 @@ class FakeCoreGateway:
         self.calls.append(GatewayCall(operation, principal, arguments))
         if self.error is not None:
             raise self.error
+        if operation in self.errors:
+            raise self.errors[operation]
 
     async def profile_summary(self, principal: TelegramPrincipal) -> dict | None:
         self._record("profile_summary", principal)
@@ -57,11 +68,61 @@ class FakeCoreGateway:
 
     async def decide(self, principal: TelegramPrincipal, **arguments: Any) -> Any:
         self._record("decide", principal, **arguments)
+        reason = arguments.get("reason")
+        # The core's own rules for a reason (C-ADAPTER-3): only with a rejection, at most
+        # REASON_MAX_CHARACTERS code points; otherwise 422 VALIDATION_FAILED.
+        if reason is not None and (arguments.get("approve") or len(reason) > REASON_MAX_CHARACTERS):
+            raise CoreError("VALIDATION_FAILED", status=422)
         return self.result
+
+    async def pending_requests(self, principal: TelegramPrincipal) -> tuple[PendingRequest, ...]:
+        self._record("pending_requests", principal)
+        return tuple(self.pending)
 
     async def change_mode(self, principal: TelegramPrincipal, **arguments: Any) -> Any:
         self._record("change_mode", principal, **arguments)
         return self.result
+
+
+# -- a core builder's facts without a database (template contract tests) ----------------
+
+
+class ScriptedFacts:
+    """A FactsReader of the core's builders that answers scripted rows instead of SQL.
+
+    Each rule pairs a fragment of the builder's query with the rows it returns; the first
+    rule whose fragment the query contains answers it. A query no rule names fails the
+    test, so a builder that starts reading something new is noticed. The template tests
+    run the core's real builder over it and render the facts it returns.
+    """
+
+    def __init__(self, *rules: tuple[str, list[dict]]) -> None:
+        self.rules = rules
+        self.queries: list[tuple[str, tuple]] = []
+
+    def fetch_all(self, query: str, parameters=()) -> list[dict]:
+        self.queries.append((query, tuple(parameters)))
+        for fragment, rows in self.rules:
+            if fragment in query:
+                return [dict(row) for row in rows]
+        raise AssertionError(f"No scripted rows for the query: {query}")
+
+    def fetch_one(self, query: str, parameters=()) -> dict | None:
+        rows = self.fetch_all(query, parameters)
+        if len(rows) > 1:
+            raise AssertionError("Expected at most one fact row")
+        return rows[0] if rows else None
+
+
+# The fragments of the shared reads of every builder (core jobs/builders/_recipient.py).
+RECIPIENT_QUERY = "FROM profiles p LEFT JOIN profile_settings"
+JOB_EVENT_QUERY = "FROM jobs WHERE id=%s"
+
+
+def recipient_row(*, language: str = "ru", telegram_user_id: str = "4242", role: str = "owner",
+                  status: str = "active", blocked: bool = False) -> dict:
+    return {"status": status, "role": role, "access_version": 3, "ui_language": language,
+            "settings_version": 5, "external_id": telegram_user_id, "blocked": blocked}
 
 
 # -- the core's internal API behind httpx.MockTransport (answer 2.4) ----------------------
@@ -97,8 +158,8 @@ class FakeCore:
     Each request is recorded. A scripted answer per path (a response, an exception the
     transport raises, or an async callable of the request) is used first; without one
     the fake answers like the core: the secret gate (one exact header, else 401), an
-    empty profile summary, contact 204, the owner commands applied, and the "bot"
-    lease kept in memory with the core's rules (one holder, a new generation per
+    empty profile summary, contact 204, the requests of ``pending``, the owner commands
+    applied, and the "bot" lease kept in memory with the core's rules (one holder, a new generation per
     acquisition, renew and release by holder and generation). ``now`` is the fake
     core's clock and ``delay`` an awaitable the lease routes wait before answering (a
     slow core); the lease is computed on arrival, as the core computes it at the start
@@ -114,6 +175,8 @@ class FakeCore:
         self.lease: FakeLease | None = None
         self.generations = 0
         self.cancelled: list[str] = []
+        # The pending_requests answer, in the core's wire shape (PendingRequestsResponse).
+        self.pending: list[dict] = []
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
@@ -150,6 +213,8 @@ class FakeCore:
             return httpx.Response(200, json={"profile": None})
         if path == "/internal/v1/contact":
             return httpx.Response(204)
+        if path == "/internal/v1/admission/pending_requests":
+            return httpx.Response(200, json={"requests": list(self.pending)})
         if path in ("/internal/v1/admission/decide", "/internal/v1/admission/change_mode"):
             command = {"id": body["command_id"], "status": "applied", "applied_at": "2026-10-06T12:00:00Z",
                        "target_id": None, "object_version": "2"}

@@ -101,6 +101,55 @@ class HeldLease:
     expires_at: str = field(compare=False)
 
 
+@dataclass(frozen=True)
+class PendingRequest:
+    """One access request the owner can still decide (core: PendingRequest, C-ADAPTER-3).
+
+    ``version`` is the expected_version of a decision on it. The applicant's Telegram ID,
+    first name and username are personal data and stay out of the repr (TC:273); any of
+    them may be None, and the username comes without "@".
+    """
+
+    request_id: UUID
+    version: int
+    telegram_user_id: str | None = field(repr=False)
+    first_name: str | None = field(repr=False)
+    username: str | None = field(repr=False)
+    requested_at: str = field(repr=False)
+
+
+def is_version(value: Any) -> bool:
+    """Whether ``value`` is a version of the core on the wire: a positive bigint as a string."""
+    return type(value) is str and _VERSION.fullmatch(value) is not None
+
+
+def is_optional_text(value: Any) -> bool:
+    """Whether ``value`` is a text field the core may leave empty: a string or None."""
+    return value is None or type(value) is str
+
+
+def _optional_text(value: Any) -> str | None:
+    if not is_optional_text(value):
+        raise CoreUnavailable()
+    return value
+
+
+def _pending_request(value: Any) -> PendingRequest:
+    item = _object(value, {"request_id", "request_version", "applicant", "requested_at"})
+    applicant = _object(item["applicant"], {"telegram_user_id", "first_name", "username"})
+    version, requested_at = item["request_version"], item["requested_at"]
+    if (not is_version(version) or type(requested_at) is not str
+            or type(item["request_id"]) is not str):
+        raise CoreUnavailable()
+    try:
+        request_id = UUID(item["request_id"])
+    except ValueError:
+        raise CoreUnavailable() from None
+    return PendingRequest(request_id, int(version), _optional_text(applicant["telegram_user_id"]),
+                          _optional_text(applicant["first_name"]), _optional_text(applicant["username"]),
+                          requested_at)
+
+
 def _refusal(response: httpx.Response) -> CoreError:
     """The core's refusal with its own code, or CoreUnavailable when there is none."""
     if response.status_code not in _REFUSALS:
@@ -214,6 +263,13 @@ class HttpCoreGateway:
             body["reason"] = reason
         return _object(await self.client.answer("/admission/decide", body), {"command", "current"})
 
+    async def pending_requests(self, principal: TelegramPrincipal) -> tuple[PendingRequest, ...]:
+        """The requests waiting for a decision, oldest first; FORBIDDEN unless an admitted owner."""
+        answer = _object(await self.client.answer("/admission/pending_requests", _actor(principal)), {"requests"})
+        if not isinstance(answer["requests"], list):
+            raise CoreUnavailable()
+        return tuple(_pending_request(item) for item in answer["requests"])
+
     async def change_mode(self, principal: TelegramPrincipal, *, command_id: UUID, expected_version: int,
                           mode: str) -> dict:
         """The owner's admission mode change; the core's {"command", "current"} answer."""
@@ -242,8 +298,8 @@ class HttpLeaseStore:
     def _lease(answer: Any, holder: str) -> HeldLease:
         lease = _object(answer, {"role", "holder", "generation", "expires_at"})
         generation = lease["generation"]
-        if (lease["role"] != ROLE or lease["holder"] != holder or type(generation) is not str
-                or not _VERSION.fullmatch(generation) or type(lease["expires_at"]) is not str):
+        if (lease["role"] != ROLE or lease["holder"] != holder or not is_version(generation)
+                or type(lease["expires_at"]) is not str):
             raise CoreUnavailable()
         return HeldLease(holder, generation, lease["expires_at"])
 

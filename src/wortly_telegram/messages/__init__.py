@@ -31,18 +31,49 @@ class RenderError(ValueError):
     """
 
 
+# Telegram's bound of an inline button's callback_data, in bytes (Bot API InlineKeyboardButton).
+CALLBACK_DATA_BYTES = 64
+
+
+@dataclass(frozen=True)
+class CallbackButton:
+    """An inline button whose press comes back to the bot as callback_data (design §7.1 п.3).
+
+    ``data`` holds object references only, never the actor; a service function with the
+    same callback prefix answers the press.
+    """
+
+    label: str
+    data: str
+
+    def __post_init__(self) -> None:
+        if type(self.label) is not str or not self.label.strip():
+            raise RenderError("A button needs a non-empty label")
+        if (type(self.data) is not str or not self.data
+                or len(self.data.encode("utf-8")) > CALLBACK_DATA_BYTES):
+            raise RenderError("A button needs callback data of 1 to 64 bytes")
+
+
 @dataclass(frozen=True)
 class OutgoingMessage:
-    """Plain text without parse_mode (ВП-16) and, optionally, the Mini App button."""
+    """Plain text without parse_mode (ВП-16) and either the Mini App button or rows of callback buttons."""
 
     text: str = field(repr=False)
     app_button: bool = False
+    buttons: tuple[tuple[CallbackButton, ...], ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.text) is not str or not self.text.strip():
             raise RenderError("A message needs a non-empty text")
         if type(self.app_button) is not bool:
             raise RenderError("app_button must be a boolean")
+        if not isinstance(self.buttons, tuple) or not all(
+                isinstance(row, tuple) and row and all(isinstance(button, CallbackButton) for button in row)
+                for row in self.buttons):
+            raise RenderError("buttons must be non-empty rows of CallbackButton")
+        if self.app_button and self.buttons:
+            # No kind needs both; one keyboard source keeps the channel's markup simple.
+            raise RenderError("A message has the Mini App button or callback buttons, not both")
 
 
 Render = Callable[[Mapping[str, Any], Language], OutgoingMessage]

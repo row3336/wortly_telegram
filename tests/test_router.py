@@ -273,10 +273,6 @@ async def test_admitted_functions_need_an_admitted_profile(gateway, make_applica
 
 # -- discovery -----------------------------------------------------------------------------
 
-def test_the_shipped_service_package_declares_no_function_yet():
-    assert discover() == ()
-
-
 @pytest.fixture
 def service_package(tmp_path, monkeypatch):
     package = tmp_path / "probe_services"
@@ -299,18 +295,18 @@ FUNCTION = textwrap.dedent("""
 def test_service_modules_are_found_and_must_declare_functions(service_package):
     (service_package / "inbox.py").write_text(FUNCTION.format(name="inbox", command="inbox"))
     (service_package / "_shared.py").write_text("X = 1\n")
-    [function] = discover("probe_services", admission_modules=())
+    [function] = discover("probe_services")
     assert function.commands == ("inbox",)
     (service_package / "broken.py").write_text("X = 1\n")
     with pytest.raises(RouterError):
-        discover("probe_services", admission_modules=())
+        discover("probe_services")
 
 
 async def test_a_command_claimed_twice_stops_the_build(service_package, make_application):
     (service_package / "a.py").write_text(FUNCTION.format(name="a", command="same"))
     (service_package / "b.py").write_text(FUNCTION.format(name="b", command="same"))
     with pytest.raises(RouterError):
-        await make_application(functions=discover("probe_services", admission_modules=()))
+        await make_application(functions=discover("probe_services"))
 
 
 async def test_start_cannot_be_taken_by_a_service_function(make_application):

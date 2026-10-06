@@ -1,4 +1,4 @@
-"""The Mini App address and the button that opens it (design T-D §6).
+"""The Mini App address, the button that opens it and the bot's inline keyboards (design T-D §6, §7.1).
 
 The address is a deployment parameter of the adapter (Q15): it comes from the
 configuration only, has no default here, and must be an https URL. It is never a
@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
-from .messages import Language
+from .messages import CallbackButton, Language, OutgoingMessage
 
 
 # WORKING TEXT (not set by the specification): the label of the old bot's start button
@@ -51,3 +51,16 @@ def launch_keyboard(address: str, language: Language) -> InlineKeyboardMarkup:
     """One inline button that opens the Mini App at the configured address."""
     button = InlineKeyboardButton(BUTTON_LABELS[language], web_app=WebAppInfo(checked_address(address)))
     return InlineKeyboardMarkup(((button,),))
+
+
+def buttons_keyboard(rows: tuple[tuple[CallbackButton, ...], ...]) -> InlineKeyboardMarkup:
+    """Inline callback buttons, row by row, as a template or a service function lays them out."""
+    return InlineKeyboardMarkup(tuple(
+        tuple(InlineKeyboardButton(button.label, callback_data=button.data) for button in row) for row in rows))
+
+
+def keyboard(message: OutgoingMessage, address: str, language: Language) -> InlineKeyboardMarkup | None:
+    """The inline keyboard of a message: the Mini App button, its callback buttons, or none."""
+    if message.app_button:
+        return launch_keyboard(address, language)
+    return buttons_keyboard(message.buttons) if message.buttons else None

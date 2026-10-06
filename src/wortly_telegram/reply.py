@@ -9,8 +9,10 @@ owner's decision of 2026-07-11):
 - a request that never left (httpx connect error, connect timeout, pool timeout):
   wait 2, 4, then 5 s and send again;
 - at most three repeats in all; after them the error goes up to the handler;
+- a 400 (BadRequest, e.g. an edit of a deleted message) is Telegram's refusal: no
+  repeat and no notice, a log line that says it was refused (T2-QA З3);
 - any other network error (a timeout after sending, a broken connection, an error
-  answer such as 5xx or 400) may follow a delivered message: no repeat and no notice,
+  answer such as 5xx) may follow a delivered message: no repeat and no notice,
   a log line with the exception class only.
 
 Other errors (Forbidden, InvalidToken, ChatMigrated, Conflict) go up at once, as in
@@ -24,7 +26,7 @@ from collections.abc import Awaitable, Callable
 import logging
 from typing import TypeVar
 
-from telegram.error import NetworkError, RetryAfter
+from telegram.error import BadRequest, NetworkError, RetryAfter
 
 from .delivery.classify import never_left, retry_after
 
@@ -39,7 +41,7 @@ _LONGEST_NETWORK_PAUSE = 5
 
 async def send_reply(call: Callable[[], Awaitable[T]], *,
                      sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> T | None:
-    """Make the reply call; None when it may have arrived and is therefore not repeated."""
+    """Make the reply call; None when it was refused or may have arrived, and is not repeated."""
     repeats = 0
     while True:
         try:
@@ -49,6 +51,10 @@ async def send_reply(call: Callable[[], Awaitable[T]], *,
             if repeats > MAX_REPEATS:
                 raise
             await sleep(int(retry_after(error).total_seconds()) + 1)
+        except BadRequest as error:
+            # A subclass of NetworkError, but Telegram answered: the call was refused, not lost.
+            logger.warning("reply refused by Telegram; not repeated: %s", type(error).__name__)
+            return None
         except NetworkError as error:
             if not never_left(error):
                 logger.warning("reply may have reached Telegram; not repeated: %s", type(error).__name__)
