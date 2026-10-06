@@ -7,6 +7,7 @@ are imported only inside the gateway's functions and the process entries.
 
 from __future__ import annotations
 
+import ast
 import os
 from pathlib import Path
 import subprocess
@@ -51,6 +52,10 @@ from wortly_telegram.messages.registry import discover as templates
 from wortly_telegram.router import discover as functions
 assert templates().missing(kinds().names) == frozenset()
 functions()
+# The core's services are the gateway's and the process entries' business: a module that
+# merely imports the handlers must not pull them in (blocking psycopg alone would not show it).
+for name in ("wortly.identity.admission_adapter", "wortly.identity.service"):
+    assert name not in sys.modules, name
 try:
     importlib.import_module("wortly.jobs.repository")
 except ImportError:
@@ -77,3 +82,11 @@ def test_adapter_modules_import_without_psycopg():
     assert result.returncode == 0, result.stderr
     assert "driver blocked" in result.stdout
     assert f"imported {len(MODULES)}" in result.stdout
+
+
+def test_the_gateway_imports_no_core_service_at_module_level():
+    tree = ast.parse((ROOT / "src" / "wortly_telegram" / "gateway.py").read_text(encoding="utf-8"))
+    imported = [node.module for node in tree.body if isinstance(node, ast.ImportFrom)]
+    # Only the principal, a plain value type, may come from the core at module level.
+    assert [module for module in imported if module and module.startswith("wortly.")] == [
+        "wortly.identity.principal"]

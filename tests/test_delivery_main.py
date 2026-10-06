@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import signal
+import sys
+from types import SimpleNamespace
 import threading
 import time
 
 import pytest
 
+from conftest import TELEGRAM_SETTINGS
 from wortly.jobs.kinds import discover as discover_kinds
-from wortly_telegram.delivery.main import DeliveryGate, StartError, checked_kinds, loop_runner
+from wortly_telegram.delivery.main import DeliveryGate, StartError, _deliver, checked_kinds, loop_runner
 from wortly_telegram.messages.registry import TemplateRegistry, discover
 
 
@@ -81,3 +85,47 @@ def test_the_start_check_refuses_a_kind_without_a_retry_rule():
     renamed = type(template)("brand_new_kind", template.render, template.examples)
     with pytest.raises(StartError, match="retry rule"):
         checked_kinds(frozenset({"brand_new_kind"}), TemplateRegistry([renamed]))
+
+
+class SlowToFinish:
+    """Stands for the core's DeliveryLoop: runs until stopped, then needs a moment to finish its last send."""
+
+    started = threading.Event()
+    finished = threading.Event()
+
+    def __init__(self, repository, **parts) -> None:
+        type(self).started.clear()
+        type(self).finished.clear()
+
+    def run(self, stop: threading.Event) -> None:
+        type(self).started.set()
+        stop.wait(10)  # a bounded wait: a failing test must not leave a thread that hangs the run
+        time.sleep(0.3)
+        type(self).finished.set()
+
+
+@pytest.mark.parametrize("number", [signal.SIGTERM, signal.SIGINT])
+async def test_the_delivery_process_waits_for_the_last_send_after_a_signal(monkeypatch, telegram, number):
+    from wortly_telegram import app
+
+    real_make_bot = app.make_bot
+    monkeypatch.setattr(app, "make_bot", lambda settings: real_make_bot(
+        settings, httpx_kwargs={"transport": telegram.transport()}))
+    # The core's loop module needs the database driver; the process only takes DeliveryLoop from it.
+    monkeypatch.setitem(sys.modules, "wortly.jobs.loop", SimpleNamespace(DeliveryLoop=SlowToFinish))
+    handlers = {}
+    monkeypatch.setattr(asyncio.get_running_loop(), "add_signal_handler",
+                        lambda signal_number, callback, *args: handlers.setdefault(signal_number, callback))
+    settings = SimpleNamespace(telegram=TELEGRAM_SETTINGS, messages_per_second=10, loop=None)
+    task = asyncio.create_task(_deliver(settings, kinds=discover_kinds(), templates=discover(), repository=None))
+    for _ in range(300):
+        await asyncio.sleep(0.01)
+        if SlowToFinish.started.is_set():
+            break
+    assert SlowToFinish.started.is_set(), "the delivery loop runs in its thread"
+    assert set(handlers) == {signal.SIGTERM, signal.SIGINT}
+    assert not task.done()
+    handlers[number]()
+    assert await asyncio.wait_for(task, timeout=10) == 0
+    # The process returns only after the loop's last send is over; the bot is shut down after that.
+    assert SlowToFinish.finished.is_set()

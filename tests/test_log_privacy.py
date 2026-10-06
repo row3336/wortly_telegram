@@ -9,9 +9,12 @@ A control run without the library levels proves the scenario would reveal a leak
 
 from __future__ import annotations
 
+import ast
 import asyncio
 from datetime import timedelta
 import logging
+from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import quote
 
 import httpx
@@ -201,3 +204,54 @@ def test_the_process_entries_run_inside_private_logs(tmp_path, monkeypatch, capt
     assert delivery_main.main(["--config", str(delivery)]) == 0
     assert len([line for line in capture.lines if "wortly_telegram.probe" in line]) == 2
     assert not [line for line in capture.lines if leaking(line)]
+
+
+def test_log_secrets_hold_the_token_forms_and_both_connection_strings(capture):
+    pytest.importorskip("psycopg")
+    from wortly.operations.connections import writer_conninfo
+
+    database = SimpleNamespace(conninfo=CONNINFO, connect_timeout_seconds=5)
+    secrets = logs.log_secrets(TOKEN, database)
+    assert secrets == (*logs.token_forms(TOKEN), CONNINFO, writer_conninfo(database))
+    # The pool opens connections with the second form, so drivers may quote it.
+    assert writer_conninfo(database) != CONNINFO
+    with logs.private_logs(secrets):
+        logging.getLogger("wortly_telegram.probe").warning("connection failed: %s", writer_conninfo(database))
+    assert [line for line in capture.lines if "wortly_telegram.probe" in line]
+    assert not [line for line in capture.lines if "target_session_attrs" in line or "db.internal" in line]
+
+
+def test_the_adapter_logs_only_classes_and_outcomes():
+    # An exception's own text can hold anything (a name, a text, an address), so a logger call
+    # takes a constant message and arguments that are class names or outcomes. Nothing is
+    # formatted into the message itself (f-string, %, .format), and logger.exception is out:
+    # it would attach the traceback and the exception text the call site did not choose.
+    # The only two calls that pass an error object are the start errors, whose messages name
+    # kinds and modules (registry and router errors), never data; they are listed one by one.
+    source = Path(__file__).resolve().parents[1] / "src" / "wortly_telegram"
+    start_errors = {
+        ("bot_main.py", "bot not started: %s", ("error",)),
+        ("delivery/main.py", "delivery not started: %s: %s", ("type(error).__name__", "error")),
+    }
+    suspicious = []
+    for path in source.rglob("*.py"):
+        name = path.relative_to(source).as_posix()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name) and node.func.value.id == "logger"):
+                continue
+            where = (name, node.lineno)
+            message = node.args[0] if node.args else None
+            if node.func.attr == "exception" or node.keywords:
+                suspicious.append((*where, "exception or keyword argument"))
+            if not (isinstance(message, ast.Constant) and isinstance(message.value, str)):
+                suspicious.append((*where, "the message is not a plain string constant"))
+                continue
+            arguments = tuple(ast.unparse(argument) for argument in node.args[1:])
+            if (name, message.value, arguments) in start_errors:
+                continue
+            for text in arguments:
+                if not ((text.startswith("type(") and text.endswith(").__name__"))
+                        or text in ("result.outcome", "result.reason or '-'")):
+                    suspicious.append((*where, text))
+    assert suspicious == []

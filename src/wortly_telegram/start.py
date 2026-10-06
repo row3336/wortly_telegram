@@ -25,8 +25,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Text not set by the specification (returned to root, Q20/Q23): the old bot's reply to
-# /start for an admitted user (OLD bot/i18n.py "main_menu"; R-TG 1.01), above the button.
+# WORKING TEXT (not set by the specification): the old bot's reply to /start for an admitted
+# user (OLD bot/i18n.py "main_menu"; R-TG 1.01), above the button; final wording waits for
+# the owner (Q20/Q23).
 TEXTS: dict[Language, str] = {
     "ru": "Главное меню:",
     "uk": "Головне меню:",

@@ -1,9 +1,7 @@
 """Template of the access_approved job: the login button after an approval (К02-028; T-D §4.3).
 
 The core's builder (wortly.jobs.builders.access_approved) sends an empty body; the
-message is the notice and the Mini App button. The texts are the old bot's approval
-notice (OLD bot/i18n.py "access_approved_notice", R-TG 2.08), which names the button
-"Start"; final wording waits for the owner (Q20).
+message is the notice and the Mini App button.
 """
 
 from __future__ import annotations
@@ -16,6 +14,9 @@ from . import Language, OutgoingMessage, RenderError, Template
 
 KIND = "access_approved"
 
+# WORKING TEXT (not set by the specification): the old bot's approval notice (OLD bot/i18n.py
+# "access_approved_notice", R-TG 2.08), which names the button "Start"; final wording waits
+# for the owner (Q20).
 TEXTS: dict[Language, str] = {
     "ru": "✅ Доступ подтверждён! Нажмите «Старт».",
     "uk": "✅ Доступ підтверджено! Натисніть «Старт».",

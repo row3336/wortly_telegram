@@ -15,8 +15,9 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from .messages import Language
 
 
-# Text not set by the specification (returned to root, Q20): the label of the old bot's
-# start button (OLD bot/i18n.py "start"), which the old approval notice refers to.
+# WORKING TEXT (not set by the specification): the label of the old bot's start button
+# (OLD bot/i18n.py "start"), which the old approval notice refers to; final wording waits
+# for the owner (Q20).
 BUTTON_LABELS: dict[Language, str] = {
     "ru": "Старт",
     "uk": "Старт",

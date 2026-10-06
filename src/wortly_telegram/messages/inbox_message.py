@@ -4,10 +4,6 @@ The core's builder (wortly.jobs.builders.inbox_message) sends the facts of one i
 record: its category, the user's text and the card the text names. A message about a
 card is a complaint and names the card's lemma; one without a card is feedback.
 
-Text not set by the specification (returned to root, owner's decision of 06.10: the
-texts are inspected later on tests): the headings are working texts. The old bot did not
-send inbox records to the owner at once (R-TG 1.17), so it has no wording to copy.
-
 The user's text is untrusted. The channel sends plain text without parse_mode (ВП-16),
 so it is placed as it is: nothing escapes it and nothing here may add markup around it.
 The text is not cut or split: the channel makes one sendMessage call, and a message over
@@ -30,7 +26,10 @@ FEEDBACK = "feedback"
 _FIELDS = frozenset({"inbox_id", "category", "text", "card"})
 _CARD_FIELDS = frozenset({"card_id", "lemma"})
 
-# Headings of the two kinds; the complaint heading has the card's lemma in {lemma}.
+# WORKING TEXT (not set by the specification): the headings of the two kinds; the complaint
+# heading has the card's lemma in {lemma}. The old bot has only the labels (OLD bot/i18n.py
+# "inbox_reports", "inbox_feedback") and no message template to copy; final wording waits
+# for the owner (2.19/Q20).
 HEADINGS: dict[str, dict[Language, str]] = {
     COMPLAINT: {
         "ru": "⚠️ Жалоба на карточку «{lemma}»",

@@ -43,10 +43,17 @@ class Lease:
 
 
 class Store:
-    """LeaseStore with a script per call. renew answers: "ok", "hang" or an exception."""
+    """LeaseStore with a script per call.
 
-    def __init__(self, clock: Clock, *, renewals=(), grants=1, stop: asyncio.Event) -> None:
+    renew answers "ok", "hang", an exception, or a number of seconds the call takes. A slow
+    call (and a slow acquire) gets the lease the database computed at the start of the call,
+    while the answer reaches the leader that many seconds later.
+    """
+
+    def __init__(self, clock: Clock, *, renewals=(), grants=1, stop: asyncio.Event,
+                 acquire_takes: float = 0.0) -> None:
         self.clock = clock
+        self.acquire_takes = acquire_takes
         self.renewals = list(renewals)
         self.grants = grants
         self.stop = stop
@@ -62,7 +69,9 @@ class Store:
             # Ends the test run: every lease granted by the script was used.
             self.stop.set()
             return None
-        return self._lease()
+        lease = self._lease()
+        self.clock.now += self.acquire_takes
+        return lease
 
     def _lease(self) -> Lease:
         lease = Lease(len(self.leases) + 1, self.clock.now + L)
@@ -75,7 +84,10 @@ class Store:
             return self._late()
         if isinstance(answer, BaseException):
             raise answer
-        return self._lease()
+        lease = self._lease()
+        if isinstance(answer, float):
+            self.clock.now += answer
+        return lease
 
     async def _late(self):
         await self.hang.wait()
@@ -165,6 +177,30 @@ async def test_renewals_extend_the_deadline_from_the_start_of_each_call(clock):
     last_renewal = start + 2 * L / 3
     assert poller.stopped == [last_renewal + L - MARGIN + STOP_TAKES]
     assert poller.stopped[0] < store.leases[-1].expires_at
+    assert_polling_ended_in_time(store, poller)
+
+
+async def test_a_slow_renewal_counts_its_deadline_from_the_start_of_the_call(clock):
+    stop = asyncio.Event()
+    store, poller = Store(clock, renewals=[15.0, "hang"], stop=stop), Poller(clock)
+    start = clock.now
+    await run_leader(store, poller, clock, stop)
+    # The first renewal started at L/3 and answered 15 s later; the database counted its L
+    # from the start, so the next deadline is that start + L - margin, not the answer's.
+    first_renewal = start + L / 3
+    assert poller.stopped == [first_renewal + L - MARGIN + STOP_TAKES]
+    assert poller.stopped[0] < store.leases[1].expires_at
+    assert_polling_ended_in_time(store, poller)
+
+
+async def test_a_slow_acquire_counts_its_deadline_from_the_start_of_the_call(clock):
+    stop = asyncio.Event()
+    store, poller = Store(clock, renewals=["hang"], stop=stop, acquire_takes=15.0), Poller(clock)
+    start = clock.now
+    await run_leader(store, poller, clock, stop)
+    assert poller.started == [start + 15.0]
+    assert poller.stopped == [start + L - MARGIN + STOP_TAKES]
+    assert poller.stopped[0] < store.leases[0].expires_at
     assert_polling_ended_in_time(store, poller)
 
 

@@ -6,7 +6,9 @@ from datetime import timedelta
 
 import httpx
 import pytest
-from telegram.error import BadRequest, NetworkError, TimedOut
+from telegram.error import (
+    BadRequest, ChatMigrated, Conflict, Forbidden, InvalidToken, NetworkError, RetryAfter, TimedOut,
+)
 
 from wortly.jobs.channel import ChannelResult
 from wortly_telegram.delivery.classify import classify, never_left
@@ -82,3 +84,42 @@ def test_only_a_transport_cause_proves_the_request_never_left():
     wrapped.__cause__ = RuntimeError("anything")
     assert classify(wrapped).outcome == "unknown"
     assert classify(ValueError("not from PTB")).outcome == "unknown"
+
+
+def caused(error: BaseException, cause: BaseException) -> BaseException:
+    error.__cause__ = cause
+    return error
+
+
+def never_left_cause() -> httpx.ConnectError:
+    return httpx.ConnectError("simulated", request=None)
+
+
+# The order of design §3.3 as a decision table: what Telegram answered explicitly wins over
+# the transport cause, "never left" comes next, everything else is unknown.
+ORDER = [
+    ("retry-after-over-cause", lambda: caused(RetryAfter(5), never_left_cause()), ("known_failed", "rate_limited")),
+    ("forbidden-over-cause", lambda: caused(Forbidden("f"), never_left_cause()), ("known_failed", "blocked")),
+    ("migrated-over-cause", lambda: caused(ChatMigrated(-100), never_left_cause()), ("known_failed", "rejected")),
+    ("bad-request-over-cause", lambda: caused(BadRequest("b"), never_left_cause()), ("known_failed", "rejected")),
+    ("invalid-token-over-cause", lambda: caused(InvalidToken("i"), never_left_cause()),
+     ("known_failed", "channel_config")),
+    ("timed-out-never-left", lambda: caused(TimedOut(), httpx.ConnectTimeout("x", request=None)),
+     ("known_failed", "not_sent")),
+    ("timed-out-pool", lambda: caused(TimedOut(), httpx.PoolTimeout("x", request=None)),
+     ("known_failed", "not_sent")),
+    ("network-error-never-left", lambda: caused(NetworkError("n"), never_left_cause()), ("known_failed", "not_sent")),
+    ("timed-out-read", lambda: caused(TimedOut(), httpx.ReadTimeout("x", request=None)), ("unknown", None)),
+    ("timed-out-write", lambda: caused(TimedOut(), httpx.WriteTimeout("x", request=None)), ("unknown", None)),
+    ("network-error-proxy", lambda: caused(NetworkError("n"), httpx.ProxyError("x", request=None)),
+     ("unknown", None)),
+    ("conflict-over-cause", lambda: caused(Conflict("c"), never_left_cause()), ("unknown", None)),
+    ("no-cause", lambda: NetworkError("Too Many Requests"), ("unknown", None)),
+    ("foreign-error-with-cause", lambda: caused(RuntimeError("bridge"), never_left_cause()), ("unknown", None)),
+]
+
+
+@pytest.mark.parametrize(("make", "expected"), [row[1:] for row in ORDER], ids=[row[0] for row in ORDER])
+def test_the_order_of_the_checks(make, expected):
+    result = classify(make())
+    assert (result.outcome, result.reason) == expected

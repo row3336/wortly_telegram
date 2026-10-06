@@ -50,9 +50,20 @@ def test_the_user_text_is_output_as_it_is_without_markup(language, category, car
     assert not set(heading) & set("<>*_`[]&\\")
 
 
-def test_the_lemma_is_output_as_it_is_too():
-    card = {"card_id": CARD["card_id"], "lemma": "<i>Haus</i>"}
-    assert TEMPLATE.render(body("complaint", "x", card), "en").text.startswith("⚠️ Complaint about the card “<i>Haus</i>”")
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_lemma_is_output_as_it_is_too(language):
+    card = {"card_id": CARD["card_id"], "lemma": "<i>Haus</i> & [x](y)"}
+    message = TEMPLATE.render(body("complaint", "x", card), language).text
+    assert message == COMPLAINT_HEADINGS[language].replace("Haus", card["lemma"]) + "\n\nx"
+
+
+@pytest.mark.parametrize("category", ["complaint", "feedback"])
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_text_keeps_its_blanks_and_line_breaks_at_the_edges(language, category):
+    # What the user typed is shown as it is; the template does not tidy it up.
+    padded = "  \n first line\n\nlast line \t\n "
+    message = TEMPLATE.render(body(category, padded, CARD if category == "complaint" else None), language).text
+    assert message.endswith("\n\n" + padded)
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -75,18 +86,22 @@ def test_a_long_text_is_neither_cut_nor_split():
 
 @pytest.mark.parametrize("bad", [
     {"category": "other"},
+    {"category": "other", "card": None},
     {"category": "complaint", "card": None},
     {"category": "feedback", "card": CARD},
     {"category": "complaint", "card": {"card_id": CARD["card_id"]}},
     {"category": "complaint", "card": {**CARD, "extra": 1}},
     {"category": "complaint", "card": {"card_id": CARD["card_id"], "lemma": " "}},
+    {"category": "complaint", "card": {**CARD, "card_id": ""}},
+    {"category": "complaint", "card": {**CARD, "card_id": None}},
     {"text": ""},
     {"text": "   "},
     {"text": None},
     {"inbox_id": None},
     {"unexpected": 1},
-], ids=["category", "complaint-no-card", "feedback-with-card", "card-no-lemma", "card-extra", "lemma-blank",
-        "text-empty", "text-blank", "text-none", "inbox-id", "extra-fact"])
+], ids=["category", "category-no-card", "complaint-no-card", "feedback-with-card", "card-no-lemma", "card-extra",
+        "lemma-blank", "card-id-empty", "card-id-none", "text-empty", "text-blank", "text-none", "inbox-id",
+        "extra-fact"])
 def test_faulty_facts_fail_before_any_network_call(bad):
     facts = body("complaint", "x", CARD) | bad
     with pytest.raises(RenderError):

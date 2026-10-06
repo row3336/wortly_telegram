@@ -91,6 +91,20 @@ def test_the_job_lease_must_cover_a_slot_and_one_request():
                          lock_timeout=timedelta(seconds=1), messages_per_second=2)
 
 
+@pytest.mark.parametrize(("seconds", "accepted"), [(8.4, False), (8.5, False), (8.6, True)])
+def test_the_job_lease_must_cover_the_slot_beyond_the_request_timeouts(seconds, accepted):
+    # 8 s of timeouts and a 0.5 s slot: 8.4 s outlasts the timeouts alone but not the slot too.
+    def build() -> DeliverySettings:
+        return DeliverySettings(database=None, telegram=telegram_settings(), loop=_Loop(timedelta(seconds=seconds)),
+                                lock_timeout=timedelta(seconds=1), messages_per_second=2)
+
+    if accepted:
+        build()
+    else:
+        with pytest.raises(ValueError):
+            build()
+
+
 # -- the loaders need the core's configuration reader, which needs psycopg ------------------
 
 DATABASE = """
@@ -188,3 +202,36 @@ def test_bot_settings_load_every_key_and_refuse_unknown_ones(tmp_path, token_fil
     path.write_text(DATABASE + BOT + telegram_table(token_file) + "allowed_updates = 1\n")
     with pytest.raises(ConfigurationError):
         load_bot_settings(path)
+
+
+# An unknown key stops the start wherever it stands: in the root and in every table of each role.
+BOT_TABLES = ("database", "bot", "access", "telegram")
+DELIVERY_TABLES = ("database", "delivery", "telegram")
+
+
+def with_unknown_key(text: str, table: str | None) -> str:
+    if table is None:
+        return "unknown_key = 1\n" + text
+    return text.replace(f"[{table}]\n", f"[{table}]\nunknown_key = 1\n", 1)
+
+
+@pytest.mark.parametrize("table", [None, *BOT_TABLES])
+def test_an_unknown_key_anywhere_stops_the_bot(tmp_path, token_file, table):
+    pytest.importorskip("psycopg")
+    from wortly.operations.config import ConfigurationError
+    from wortly_telegram.config import load_bot_settings
+    path = tmp_path / "bot.toml"
+    path.write_text(with_unknown_key(DATABASE + BOT + telegram_table(token_file), table))
+    with pytest.raises(ConfigurationError, match="unknown_key"):
+        load_bot_settings(path)
+
+
+@pytest.mark.parametrize("table", [None, *DELIVERY_TABLES])
+def test_an_unknown_key_anywhere_stops_the_delivery(tmp_path, token_file, table):
+    pytest.importorskip("psycopg")
+    from wortly.operations.config import ConfigurationError
+    from wortly_telegram.config import load_delivery_settings
+    path = tmp_path / "delivery.toml"
+    path.write_text(with_unknown_key(DATABASE + DELIVERY + telegram_table(token_file), table))
+    with pytest.raises(ConfigurationError, match="unknown_key"):
+        load_delivery_settings(path)
