@@ -20,6 +20,8 @@ from urllib.parse import quote
 import httpx
 import pytest
 
+from wortly.operations.log_privacy import token_forms
+
 from conftest import TELEGRAM_SETTINGS, feed
 from fakes.jobs import envelope, snapshot
 from fakes.telegram_api import TOKEN, callback_update, message_update, user
@@ -133,7 +135,7 @@ async def scenario(telegram, gateway, make_application) -> None:
 
 
 async def test_no_log_line_carries_a_secret_a_text_or_a_name(telegram, gateway, make_application, capture):
-    with logs.private_logs((*logs.token_forms(TOKEN), CONNINFO)):
+    with logs.private_logs((*token_forms(TOKEN), CONNINFO)):
         await scenario(telegram, gateway, make_application)
     assert any(record.name.startswith("wortly_telegram") for record in capture.records), "the scenario logged"
     for record, line in zip(capture.records, capture.lines):
@@ -151,17 +153,12 @@ async def test_control_without_quiet_libraries_the_scenario_reveals_texts(telegr
 
     for name in logs.LIBRARY_LOGGERS:
         logging.getLogger(name).setLevel(logging.NOTSET)
-    with private_records(logs.token_forms(TOKEN)):
+    with private_records(token_forms(TOKEN)):
         await scenario(telegram, gateway, make_application)
     revealed = {secret for line in capture.lines for secret in leaking(line)}
     assert {TEXT, NAMES[0], NAMES[2], DELIVERED, str(USER_ID)} <= revealed
     # The token is still replaced in every form, even at DEBUG.
-    assert not revealed & set(logs.token_forms(TOKEN))
-
-
-def test_token_forms_cover_the_raw_the_encoded_and_the_secret_part():
-    raw, encoded, secret = logs.token_forms(TOKEN)
-    assert raw == TOKEN and "%3A" in encoded and ":" not in secret and secret in encoded
+    assert not revealed & set(token_forms(TOKEN))
 
 
 def test_library_loggers_are_kept_at_warning(capture):
@@ -177,6 +174,7 @@ def test_the_process_entries_run_inside_private_logs(tmp_path, monkeypatch, capt
 
     token_file = tmp_path / "token"
     token_file.write_text(TOKEN + "\n")
+    token_file.chmod(0o600)  # the core refuses a token file open to group or others
     telegram_table = (f'[telegram]\nbot_token_file = "{token_file}"\nweb_app_url = "https://app.example.test/"\n'
                       "connect_timeout_seconds = 1\nread_timeout_seconds = 1\nwrite_timeout_seconds = 1\n"
                       "pool_timeout_seconds = 1\n")
@@ -212,7 +210,7 @@ def test_log_secrets_hold_the_token_forms_and_both_connection_strings(capture):
 
     database = SimpleNamespace(conninfo=CONNINFO, connect_timeout_seconds=5)
     secrets = logs.log_secrets(TOKEN, database)
-    assert secrets == (*logs.token_forms(TOKEN), CONNINFO, writer_conninfo(database))
+    assert secrets == (*token_forms(TOKEN), CONNINFO, writer_conninfo(database))
     # The pool opens connections with the second form, so drivers may quote it.
     assert writer_conninfo(database) != CONNINFO
     with logs.private_logs(secrets):

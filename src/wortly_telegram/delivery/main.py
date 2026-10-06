@@ -133,8 +133,7 @@ async def _deliver(settings, *, kinds, templates, repository) -> int:
 def serve(settings) -> int:
     from wortly.jobs.kinds import discover
     from wortly.jobs.repository import JobRepository
-    from wortly.jobs.worker import lock_timeout_connections
-    from wortly.operations.connections import open_connection_pool
+    from wortly.operations.connections import lock_timeout_connections, open_connection_pool
 
     from ..messages.registry import discover as discover_templates
 

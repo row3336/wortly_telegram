@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from datetime import timedelta
 from pathlib import Path
 import textwrap
@@ -159,6 +160,8 @@ session_lifetime_seconds = 86400
 def token_file(tmp_path: Path) -> Path:
     path = tmp_path / "token"
     path.write_text("123:secret\n")
+    # The core refuses a secret file open to group or others, whatever the umask is.
+    path.chmod(0o600)
     return path
 
 
@@ -235,3 +238,54 @@ def test_an_unknown_key_anywhere_stops_the_delivery(tmp_path, token_file, table)
     path.write_text(with_unknown_key(DATABASE + DELIVERY + telegram_table(token_file), table))
     with pytest.raises(ConfigurationError, match="unknown_key"):
         load_delivery_settings(path)
+
+
+SOURCE = Path(__file__).resolve().parents[1] / "src" / "wortly_telegram"
+KEY_ERROR = ("telegram.bot_token_file must be owned by the process user and "
+             "closed to group and others (mode 0600)")
+
+
+@pytest.mark.parametrize("role, settings_text, loader", [
+    ("delivery", DELIVERY, "load_delivery_settings"), ("bot", BOT, "load_bot_settings")])
+@pytest.mark.parametrize("mode", [0o644, 0o640, 0o604, 0o666])
+def test_a_token_file_open_to_others_stops_the_start_with_the_key_only(
+        tmp_path, token_file, role, settings_text, loader, mode):
+    pytest.importorskip("psycopg")
+    from wortly.operations.config import ConfigurationError
+    import wortly_telegram.config as config
+    token_file.chmod(mode)
+    path = tmp_path / f"{role}.toml"
+    path.write_text(DATABASE + settings_text + telegram_table(token_file))
+    with pytest.raises(ConfigurationError) as raised:
+        getattr(config, loader)(path)
+    message = str(raised.value)
+    assert message == KEY_ERROR
+    assert "123:secret" not in message and str(token_file) not in message
+
+
+@pytest.mark.parametrize("main_module, program", [("wortly_telegram.delivery.main", "wortly delivery"),
+                                                 ("wortly_telegram.bot_main", "wortly bot")])
+def test_the_process_entries_exit_with_code_two_on_a_token_file_open_to_others(
+        tmp_path, token_file, capsys, main_module, program):
+    pytest.importorskip("psycopg")
+    from importlib import import_module
+    token_file.chmod(0o644)
+    path = tmp_path / "role.toml"
+    path.write_text(DATABASE + (DELIVERY if "delivery" in main_module else BOT) + telegram_table(token_file))
+    assert import_module(main_module).main(["--config", str(path)]) == 2
+    captured = capsys.readouterr()
+    assert captured.err == f"{program}: configuration error: {KEY_ERROR}\n"
+    assert "123:secret" not in captured.err + captured.out
+
+
+def test_no_module_imports_a_private_name_of_the_core():
+    # Private names (leading underscore) are the core's own: it may rename them freely.
+    offenders = []
+    for path in sorted(SOURCE.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "wortly":
+                # A private module path counts as well as a private imported name.
+                private_module = any(part.startswith("_") for part in (node.module or "").split("."))
+                offenders += [f"{path.name}:{node.lineno} {alias.name}" for alias in node.names
+                              if private_module or alias.name.startswith("_")]
+    assert offenders == []

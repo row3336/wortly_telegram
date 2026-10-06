@@ -140,9 +140,9 @@ def load_delivery_settings(path: Path) -> DeliverySettings:
     """
     from wortly.jobs.loop import DeliveryLoopConfig
     from wortly.jobs.retry_policy import RetryPolicyConfig
-    from wortly.operations.config import _database, _read_file
+    from wortly.operations.config import load_database_settings, read_config_file
 
-    root = _read_file(path)
+    root = read_config_file(path)
     database, delivery, telegram = root.table("database"), root.table("delivery"), root.table("telegram")
 
     def build() -> DeliverySettings:
@@ -154,7 +154,7 @@ def load_delivery_settings(path: Path) -> DeliverySettings:
             max_failed_preflights=delivery.integer("max_failed_preflights", minimum=1, maximum=2**31 - 1),
             retry=RetryPolicyConfig(nondelivery_delay=_seconds(delivery, "nondelivery_delay_seconds")))
         return DeliverySettings(
-            database=_database(database), telegram=_telegram(telegram), loop=loop,
+            database=load_database_settings(database), telegram=_telegram(telegram), loop=loop,
             lock_timeout=_lock_timeout(delivery),
             messages_per_second=delivery.integer("messages_per_second", minimum=1, maximum=1_000_000))
 
@@ -169,9 +169,9 @@ def load_bot_settings(path: Path) -> BotSettings:
 
     Tables: [database] (as the api role), [bot], [access], [telegram].
     """
-    from wortly.operations.config import _database, _read_file
+    from wortly.operations.config import load_database_settings, read_config_file
 
-    root = _read_file(path)
+    root = read_config_file(path)
     database, bot, access, telegram = (root.table("database"), root.table("bot"), root.table("access"),
                                        root.table("telegram"))
 
@@ -182,7 +182,7 @@ def load_bot_settings(path: Path) -> BotSettings:
             stop_margin=_seconds(bot, "stop_margin_seconds"),
             standby_retry=_seconds(bot, "standby_retry_seconds"))
         return BotSettings(
-            database=_database(database), telegram=_telegram(telegram), leader=leader,
+            database=load_database_settings(database), telegram=_telegram(telegram), leader=leader,
             poll_timeout=_seconds(bot, "poll_timeout_seconds"), lock_timeout=_lock_timeout(bot),
             session_lifetime=access.lifetime_from_now("session_lifetime_seconds"))
 

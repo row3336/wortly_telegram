@@ -87,8 +87,8 @@ async def _serve(settings, *, gateway, leases) -> int:
 
 def serve(settings) -> int:
     from wortly.jobs.leases import LeaseStore
-    from wortly.jobs.worker import lock_timeout_connections, utc_now
-    from wortly.operations.connections import open_connection_pool
+    from wortly.jobs.worker import utc_now
+    from wortly.operations.connections import lock_timeout_connections, open_connection_pool
 
     from .gateway import build_gateway
 

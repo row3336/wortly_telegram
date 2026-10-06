@@ -19,8 +19,9 @@ from dataclasses import dataclass, field
 from importlib import import_module
 import json
 import pkgutil
-import re
 from typing import Any
+
+from wortly.identity.principal import is_telegram_id
 
 from . import LANGUAGES, Language, OutgoingMessage, RenderError, Template
 
@@ -30,9 +31,6 @@ _FRAMEWORK_MODULES = frozenset({"registry", "plural"})
 
 # The envelope builders write (ВП-17; core jobs/builders/*.py).
 ENVELOPE_SCHEMA = 1
-# Telegram user IDs as the core stores them: str(int), below 2**52 (identity/principal.py).
-_TELEGRAM_ID = re.compile(r"[1-9][0-9]{0,15}")
-_TELEGRAM_ID_LIMIT = 2**52
 
 
 class TemplateRegistryError(RuntimeError):
@@ -56,7 +54,7 @@ def _mapping(value: Any, name: str) -> Mapping[str, Any]:
 
 def _chat_id(recipient: Mapping[str, Any]) -> int:
     value = recipient.get("telegram_user_id")
-    if type(value) is not str or not _TELEGRAM_ID.fullmatch(value) or int(value) >= _TELEGRAM_ID_LIMIT:
+    if not is_telegram_id(value):
         raise RenderError("The delivery facts name no Telegram recipient")
     return int(value)
 

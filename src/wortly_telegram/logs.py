@@ -4,9 +4,8 @@ Both process entries run inside the core's record factory
 (wortly.operations.log_privacy.private_records): an exception is written by type names
 only, and the secret values given here are replaced wherever a library writes them.
 
-- The bot token in every written form. PTB puts it into each request URL, uvicorn-like
-  writers percent-encode its colon; the part after the colon is never encoded, so
-  hiding it hides every form.
+- The bot token in every written form (the core's token_forms): PTB puts it into each
+  request URL, uvicorn-like writers percent-encode its colon.
 - Both connection strings of the database settings (as configured and as libpq gets it).
 
 Library loggers are kept at WARNING: at DEBUG and INFO, PTB and httpx write request
@@ -20,7 +19,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 import logging
 from typing import TYPE_CHECKING
-from urllib.parse import quote
 
 if TYPE_CHECKING:
     from wortly.operations.config import DatabaseSettings
@@ -34,13 +32,9 @@ def quiet_libraries() -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
-def token_forms(token: str) -> tuple[str, ...]:
-    """The token as written, percent-encoded, and its secret part after the colon."""
-    return token, quote(token, safe=""), token.partition(":")[2]
-
-
 def log_secrets(token: str, database: DatabaseSettings) -> tuple[str, ...]:
     from wortly.operations.connections import writer_conninfo
+    from wortly.operations.log_privacy import token_forms
 
     return (*token_forms(token), database.conninfo, writer_conninfo(database))
 
