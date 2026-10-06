@@ -1,0 +1,18 @@
+[project]
+name = "wortly-telegram"
+version = "0.1.0"
+description = "Wortly Telegram adapter: the bot and delivery processes"
+requires-python = ">=3.14,<3.15"
+
+[tool.pytest.ini_options]
+# The adapter runs on the core package of the sibling repository (design T-D §9.5).
+pythonpath = ["src", "../core/src"]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
+asyncio_mode = "auto"
+filterwarnings = [
+    # PTB 22.8 itself reads RetryAfter.retry_after while building the exception.
+    "ignore:Deprecated since version v22.2. In a future major version attribute `retry_after`:telegram.warnings.PTBDeprecationWarning",
+    # PTB 22.8 checks the polling error callback with an asyncio helper Python 3.14 deprecates.
+    "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:telegram.ext._updater",
+]
