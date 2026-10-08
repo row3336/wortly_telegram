@@ -54,8 +54,13 @@ def test_the_working_texts_of_the_old_bot_are_kept():
 
 
 @pytest.mark.parametrize(("checked_after", "status"), [
-    (timedelta(hours=24), "approved"),  # answer 2.5, part 2: at exactly 24 hours the job is closed
+    (timedelta(hours=24, microseconds=1), "approved"),  # answer 2.5, part 2: past 24 hours the job is closed
     (timedelta(minutes=5), "rejected"),
 ])
 def test_a_closed_job_leaves_nothing_to_render(checked_after, status):
     assert facts("ru", checked_after=checked_after, status=status) is None
+
+
+def test_a_notice_checked_at_exactly_24_hours_is_still_rendered():
+    # Owner decision 2.19и: the 24-hour boundary is inclusive; only a later check closes the job.
+    assert facts("ru", checked_after=timedelta(hours=24)) is not None

@@ -112,8 +112,13 @@ def test_names_are_output_as_they_are_without_markup(language):
 
 
 def test_a_closed_job_leaves_nothing_to_render():
-    # Answer 2.5, part 2: the notice lives 24 hours from the request.
-    assert built(checked_after=timedelta(hours=24)) is None
+    # Answer 2.5, part 2: the notice lives 24 hours from the request; owner decision 2.19и makes
+    # the boundary inclusive, so the job is closed only by a check after the 24th hour.
+    assert built(checked_after=timedelta(hours=24, microseconds=1)) is None
+
+
+def test_a_notice_checked_at_exactly_24_hours_is_still_built():
+    assert built(checked_after=timedelta(hours=24)) is not None
 
 
 @pytest.mark.parametrize("body", [
