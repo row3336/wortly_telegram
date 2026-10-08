@@ -33,14 +33,17 @@ WORKING_TEXTS = (
     ("service/access.py", "TRY_LATER"),
 )
 
-# Constants whose wording the owner approved (R10, S05; 08.10.2026): they carry the approval mark instead.
-# The basis (R10 or S05) varies, so the check accepts any basis after the common prefix.
+# Constants whose wording the owner approved (R10, S04, S05, S06; 08.10.2026): they carry the approval mark instead.
+# The basis (R10, S04, S05 or S06) varies, so the check accepts any basis after the common prefix.
 APPROVED = "# Wording approved by the owner ("
 APPROVED_TEXTS = (
     ("webapp.py", "CARD_BUTTON_LABELS"),
     ("messages/inbox_message.py", "HEADINGS"),
     ("messages/inbox_message.py", "SENDER_LABELS"),
     ("messages/inbox_message.py", "NUMBER_LABELS"),
+    ("messages/study_reminder.py", "HEADINGS"),
+    ("messages/study_reminder.py", "LEARNING_READY_LINES"),
+    ("messages/study_reminder.py", "APP_BUTTON_LABELS"),
 )
 
 

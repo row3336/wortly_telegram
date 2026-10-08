@@ -63,9 +63,9 @@ def checked_address(value: object) -> str:
     return value
 
 
-def launch_keyboard(address: str, language: Language) -> InlineKeyboardMarkup:
-    """One inline button that opens the Mini App at the configured address."""
-    button = InlineKeyboardButton(BUTTON_LABELS[language], web_app=WebAppInfo(checked_address(address)))
+def launch_keyboard(address: str, language: Language, label: str | None = None) -> InlineKeyboardMarkup:
+    """One inline button that opens the Mini App at the configured address, with the start label unless named."""
+    button = InlineKeyboardButton(label or BUTTON_LABELS[language], web_app=WebAppInfo(checked_address(address)))
     return InlineKeyboardMarkup(((button,),))
 
 
@@ -92,7 +92,7 @@ def buttons_keyboard(rows: tuple[tuple[CallbackButton, ...], ...]) -> InlineKeyb
 def keyboard(message: OutgoingMessage, address: str, language: Language) -> InlineKeyboardMarkup | None:
     """The inline keyboard of a message: the Mini App button, its card button, its callback buttons, or none."""
     if message.app_button:
-        return launch_keyboard(address, language)
+        return launch_keyboard(address, language, message.app_label)
     if message.app_card is not None:
         return card_keyboard(address, message.app_card, language)
     return buttons_keyboard(message.buttons) if message.buttons else None

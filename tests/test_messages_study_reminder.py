@@ -1,9 +1,9 @@
 """The study_reminder template on the facts envelope of the core's builder (T-D §4.3; C-JOBS-KINDS).
 
 The body is the one the core's builder writes (wortly.jobs.builders.study_reminder):
-local date, pair and the ready items with the Today numbers. The text is a working text
-pending the owner's approval: the old bot's Learning reminder without its quorum part
-and its chat-menu line.
+local date, pair and the ready items with the Today numbers. The text is the owner's
+(S06): two lines split by a real line break, without the old share of the group and the
+old chat-menu line. The message has the plain Mini App button with the S04 label.
 """
 
 from __future__ import annotations
@@ -12,14 +12,17 @@ import json
 
 import pytest
 
-from wortly_telegram.messages import LANGUAGES, RenderError
+from wortly_telegram.messages import LANGUAGES, OutgoingMessage, RenderError
 from wortly_telegram.messages.registry import discover
-from wortly_telegram.messages.study_reminder import TEMPLATE
+from wortly_telegram.messages.study_reminder import APP_BUTTON_LABELS, TEMPLATE
+from wortly_telegram.webapp import BUTTON_LABELS, keyboard
 
 
-EXPECTED = {"ru": "Напоминание об изучении:\nготово сейчас = 3",
-            "uk": "Нагадування про вивчення:\nготово зараз = 3",
-            "en": "Learning reminder:\ndue now = 3"}
+ADDRESS = "https://app.example.test/wortly/"
+LABELS = {"ru": "Открыть приложение", "uk": "Відкрити застосунок", "en": "Open app"}
+EXPECTED = {"ru": "Напоминание об изучении.\nГотово карточек: 3",
+            "uk": "Нагадування про вивчення.\nГотово карток: 3",
+            "en": "Learning reminder.\nCards ready: 3"}
 
 
 def facts(language="ru", body=None):
@@ -30,11 +33,46 @@ def facts(language="ru", body=None):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_the_learning_reminder_is_the_old_text_without_quorum_and_menu_line(language):
+def test_the_learning_reminder_is_the_owners_two_line_text(language):
     prepared = discover().prepare("study_reminder", facts(language))
     assert prepared.chat_id == 4242
     assert prepared.message.text == EXPECTED[language]
-    assert prepared.message.app_button is False and prepared.message.buttons == ()
+    assert prepared.message.text.splitlines() == EXPECTED[language].split("\n")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_text_has_no_markup_no_share_of_the_group_and_no_old_menu_line(language):
+    # S06: a real line break, not a literal <br>; neither "need N" (П14), nor "= N", nor the menu path.
+    text = discover().prepare("study_reminder", facts(language)).message.text
+    assert "<" not in text and ">" not in text
+    assert "=" not in text and "/" not in text
+    assert not any(word in text.lower() for word in ("нужно", "потрібно", "need", "меню", "menu"))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_reminder_has_one_plain_mini_app_button_with_its_label(language):
+    # S04: the usual entry, the configured address as is; nothing in it starts or ends a session.
+    message = discover().prepare("study_reminder", facts(language)).message
+    assert message.app_button is True and message.buttons == () and message.app_card is None
+    assert APP_BUTTON_LABELS == LABELS
+    [[button]] = keyboard(message, ADDRESS, language).inline_keyboard
+    assert button.text == LABELS[language]
+    assert button.web_app.url == ADDRESS
+    assert button.callback_data is None and button.url is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_start_button_keeps_its_label(language):
+    [[button]] = keyboard(OutgoingMessage("text", app_button=True), ADDRESS, language).inline_keyboard
+    assert button.text == BUTTON_LABELS[language] and button.web_app.url == ADDRESS
+
+
+@pytest.mark.parametrize("label", ["", "  ", 5])
+def test_a_button_label_needs_a_text_and_the_mini_app_button(label):
+    with pytest.raises(RenderError):
+        OutgoingMessage("text", app_button=True, app_label=label)
+    with pytest.raises(RenderError):
+        OutgoingMessage("text", app_label="Open app")
 
 
 @pytest.mark.parametrize("body", [

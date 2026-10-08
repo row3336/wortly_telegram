@@ -62,12 +62,15 @@ class OutgoingMessage:
     The keyboard is the Mini App button, the Mini App button that opens one card
     (``app_card``, answer Q20), or rows of callback buttons. ``app_card`` is a card id
     only: it grants nothing, the Mini App still signs in with its own initData.
+    ``app_label`` names the Mini App button when a kind has its own approved label (the
+    Learning reminder, S04); the button opens the same address, without it the start label.
     """
 
     text: str = field(repr=False)
     app_button: bool = False
     buttons: tuple[tuple[CallbackButton, ...], ...] = ()
     app_card: str | None = field(default=None, repr=False)
+    app_label: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.text) is not str or not self.text.strip():
@@ -78,6 +81,9 @@ class OutgoingMessage:
                 isinstance(row, tuple) and row and all(isinstance(button, CallbackButton) for button in row)
                 for row in self.buttons):
             raise RenderError("buttons must be non-empty rows of CallbackButton")
+        if self.app_label is not None and (
+                not self.app_button or type(self.app_label) is not str or not self.app_label.strip()):
+            raise RenderError("app_label names the Mini App button and is a non-empty text")
         if self.app_card is not None and not _canonical_uuid(self.app_card):
             # The Mini App opens only a well-formed card id; anything else would be dropped there.
             raise RenderError("app_card must be a card id")

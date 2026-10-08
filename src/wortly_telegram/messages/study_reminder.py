@@ -6,11 +6,14 @@ pair and the items ready at the preflight, each with the numbers of the Today sc
 here fails rendering before any network call, so the contract test of the registry
 catches a new core type that has no text.
 
-The text follows answer 2.7 (keep the old bot's texts) where that is possible: the old
-bot's Learning reminder (OLD bot/i18n.py "reminder_learning_ready", R-TG 2.01) without
-its "/ need N" part, because the share of the group it named is gone (П14), and without
-its last line, which pointed to the old bot's chat menu (К00-018). Like the old reminder
-it has no button: whether reminders get the Mini App button is still open (Q20).
+The text is the owner's (S06): a heading line and a line with the number of ready cards,
+the count the core sends (the Today screen's, by the accepted Learning readiness rules
+and the chosen material). The old bot's share of the group ("need N", gone with П14) and
+its line to the old chat menu (К00-018) do not come back.
+
+The message carries the plain Mini App button with its own label (S04). It opens the
+configured address as the start button does, with nothing in the query, so the Mini App
+opens at its usual entry: pressing it neither starts a session nor ends the current one.
 """
 
 from __future__ import annotations
@@ -26,18 +29,23 @@ KIND = "study_reminder"
 _FIELDS = frozenset({"local_date", "pair", "items"})
 LEARNING_READY = "learning_ready"
 
-# WORKING TEXT, wording pending the owner's approval (answer 2.7 keeps the old texts, but the
-# old one had to be shortened, see above; T-TEXTS-PAGE): the old bot's heading and its
-# "ready now" line.
+# Wording approved by the owner (S06, 08.10.2026); display conditions follow TA.
 HEADINGS: dict[Language, str] = {
-    "ru": "Напоминание об изучении:",
-    "uk": "Нагадування про вивчення:",
-    "en": "Learning reminder:",
+    "ru": "Напоминание об изучении.",
+    "uk": "Нагадування про вивчення.",
+    "en": "Learning reminder.",
 }
+# Wording approved by the owner (S06, 08.10.2026); display conditions follow TA.
 LEARNING_READY_LINES: dict[Language, str] = {
-    "ru": "готово сейчас = {ready}",
-    "uk": "готово зараз = {ready}",
-    "en": "due now = {ready}",
+    "ru": "Готово карточек: {ready}",
+    "uk": "Готово карток: {ready}",
+    "en": "Cards ready: {ready}",
+}
+# Wording approved by the owner (S04, 08.10.2026); display conditions follow TA.
+APP_BUTTON_LABELS: dict[Language, str] = {
+    "ru": "Открыть приложение",
+    "uk": "Відкрити застосунок",
+    "en": "Open app",
 }
 
 
@@ -64,7 +72,7 @@ def render(body: Mapping[str, Any], language: Language) -> OutgoingMessage:
         if not isinstance(item, Mapping) or item.get("type") not in _LINES:
             raise RenderError("A reminder item has an unknown type")
         lines.append(_LINES[item["type"]](item, language))
-    return OutgoingMessage("\n".join(lines))
+    return OutgoingMessage("\n".join(lines), app_button=True, app_label=APP_BUTTON_LABELS[language])
 
 
 TEMPLATE = Template(KIND, render, examples=(
