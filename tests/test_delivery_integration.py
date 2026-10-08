@@ -32,7 +32,7 @@ from wortly_telegram.app import make_bot  # noqa: E402
 from wortly_telegram.delivery.capacity import TelegramCapacity  # noqa: E402
 from wortly_telegram.delivery.channel import TelegramChannel  # noqa: E402
 from wortly_telegram.delivery.main import (  # noqa: E402
-    DeliveryGate, StartError, checked_readiness, loop_runner,
+    DeliveryGate, loop_runner, reported_unserved,
 )
 from wortly_telegram.messages.registry import discover as discover_templates  # noqa: E402
 
@@ -182,16 +182,18 @@ def test_another_403_is_repeated_after_the_delay_and_leaves_no_mark(database, te
                           (profile,)).fetchone()[0] == 0
 
 
-def test_a_job_of_a_kind_without_a_builder_makes_the_process_not_ready(database):
+def test_a_job_of_a_kind_without_a_builder_is_reported_once_and_does_not_stop_the_start(database, caplog):
     repository = JobRepository(database, clock=lambda: NOW)
     kinds = discover_kinds().names
-    checked_readiness(kinds, repository)
+    assert reported_unserved(kinds, repository) == frozenset()
     profile, _ = approved_recipient(database)
     with database() as db, db.transaction():
         repository.enqueue(db, logical_key="future_kind:1", profile_id=profile, kind="future_kind",
                            available_at=NOW, payload={})
-    with pytest.raises(StartError, match="future_kind"):
-        checked_readiness(kinds, repository)
+    with caplog.at_level("ERROR", logger="wortly_telegram.delivery.main"):
+        assert reported_unserved(kinds, repository) == frozenset({"future_kind"})
+    lines = [record for record in caplog.records if "future_kind" in record.getMessage()]
+    assert len(lines) == 1
 
 
 def test_unknown_is_final_and_never_sent_again(database, telegram, delivery):

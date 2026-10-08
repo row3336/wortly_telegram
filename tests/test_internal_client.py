@@ -234,7 +234,8 @@ async def test_a_renewal_has_its_own_deadline_when_the_core_hangs(core):
 @pytest.fixture
 def secret_file(tmp_path):
     path = tmp_path / "service_secret"
-    path.write_text(CORE_SECRET + "\n")
+    # The core accepts only 64 lowercase hex characters (C-KEY-FORMAT); synthetic value.
+    path.write_text("0123456789abcdef" * 4 + "\n")
     path.chmod(0o600)
     return path
 
