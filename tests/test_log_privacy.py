@@ -241,9 +241,6 @@ def test_the_adapter_logs_only_classes_and_outcomes():
     start_errors = {
         ("bot_main.py", "bot not started: %s", ("error",)),
         ("delivery/main.py", "delivery not started: %s: %s", ("type(error).__name__", "error")),
-        # Kind names of waiting jobs (owner decision В2), never the jobs' content.
-        ("delivery/main.py", "jobs of kinds this release cannot deliver are waiting: %s",
-         ("', '.join(sorted(unserved))",)),
     }
     suspicious = []
     for path in source.rglob("*.py"):

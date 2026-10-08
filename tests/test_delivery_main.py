@@ -13,6 +13,7 @@ import pytest
 
 from conftest import TELEGRAM_SETTINGS
 from wortly.jobs.kinds import discover as discover_kinds
+from wortly.jobs.loop import UnservedReport
 from wortly_telegram.delivery.main import (
     DeliveryGate, StartError, _deliver, checked_kinds, loop_runner, reported_unserved, serve,
 )
@@ -104,7 +105,7 @@ class FakeRepository:
 def test_nothing_is_logged_without_jobs_of_unknown_kinds(caplog):
     kinds = discover_kinds().names
     repository = FakeRepository(waiting=frozenset(kinds))
-    assert reported_unserved(kinds, repository) == frozenset()
+    assert reported_unserved(kinds, repository, UnservedReport()) == frozenset()
     assert repository.asked == [kinds]
     assert caplog.records == []
 
@@ -112,10 +113,10 @@ def test_nothing_is_logged_without_jobs_of_unknown_kinds(caplog):
 def test_jobs_of_unknown_kinds_are_logged_once_by_name_and_do_not_refuse_the_start(caplog):
     repository = FakeRepository(waiting=frozenset({"brand_new_kind", "access_approved"}))
     with caplog.at_level("ERROR"):
-        unserved = reported_unserved(discover_kinds().names, repository)
+        unserved = reported_unserved(discover_kinds().names, repository, UnservedReport())
     assert unserved == frozenset({"brand_new_kind"})
     assert [record.getMessage() for record in caplog.records] == [
-        "jobs of kinds this release cannot deliver are waiting: brand_new_kind"]
+        "1 job kinds this release cannot deliver are waiting: brand_new_kind"]
 
 
 def test_serve_starts_the_delivery_with_a_job_of_an_unknown_kind(monkeypatch, caplog):
@@ -123,8 +124,9 @@ def test_serve_starts_the_delivery_with_a_job_of_an_unknown_kind(monkeypatch, ca
 
     started = []
 
-    async def fake_deliver(settings, *, kinds, templates, repository):
+    async def fake_deliver(settings, *, kinds, templates, repository, unserved_report):
         started.append((kinds.names, repository))
+        assert isinstance(unserved_report, UnservedReport)  # the loop gets the start's report
         return 0
 
     monkeypatch.setattr(main, "_deliver", fake_deliver)
@@ -138,11 +140,12 @@ def test_serve_starts_the_delivery_with_a_job_of_an_unknown_kind(monkeypatch, ca
     settings = SimpleNamespace(database=None, lock_timeout=None, telegram=TELEGRAM_SETTINGS)
     with caplog.at_level("ERROR"):
         assert serve(settings) == 0
-    assert started == [(discover_kinds().names, repository)]  # the same repository: the jobs stay untouched
+    assert [names for names, _ in started] == [discover_kinds().names]
+    assert started[0][1] is repository  # the same repository: the jobs stay untouched
     assert repository.asked == [discover_kinds().names]
     assert closed == [True]
     assert [record.getMessage() for record in caplog.records] == [
-        "jobs of kinds this release cannot deliver are waiting: brand_new_kind"]
+        "1 job kinds this release cannot deliver are waiting: brand_new_kind"]
 
 
 class SlowToFinish:
@@ -187,3 +190,21 @@ async def test_the_delivery_process_waits_for_the_last_send_after_a_signal(monke
     assert await asyncio.wait_for(task, timeout=10) == 0
     # The process returns only after the loop's last send is over; the bot is shut down after that.
     assert SlowToFinish.finished.is_set()
+
+
+def test_the_start_line_and_the_loop_share_one_report(caplog):
+    from wortly.jobs.loop import UnservedReport
+
+    now = [0.0]
+    report = UnservedReport(monotonic=lambda: now[0])
+    repository = FakeRepository(waiting=frozenset({"future_a", "future_b"}))
+    names = discover_kinds().names
+    with caplog.at_level("ERROR"):
+        reported_unserved(names, repository, report)
+        now[0] = 30 * 60
+        report.note(repository.unserved_kinds(names))  # the loop's poll
+        assert [r.getMessage() for r in caplog.records] == [
+            "2 job kinds this release cannot deliver are waiting: future_a, future_b"]
+        now[0] = 61 * 60
+        report.note(repository.unserved_kinds(names))
+        assert len(caplog.records) == 2

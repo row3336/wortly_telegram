@@ -9,8 +9,9 @@ own, the HTTPXRequest timeouts bound it.
 
 Start: the configuration is complete; every job kind of the core has a builder, a
 retry rule (checked by DeliveryLoop) and a template here; an unfinished job waiting for a
-kind without a builder is only logged (JobRepository.unserved_kinds; owner decision В2:
-such jobs stay untouched, the other kinds are delivered); getMe accepts the token
+kind without a builder is only logged (JobRepository.unserved_kinds; owner decisions В2, Q21,
+Q22: such jobs stay untouched, the other kinds are delivered, a new set of kinds is logged at
+once and the same set at most once an hour, see wortly.jobs.loop.UnservedReport); getMe accepts the token
 (design §2.3). Otherwise the process does not start. While running, an InvalidToken
 answer closes the gate: no further job is claimed until the process is restarted.
 Stopping (SIGTERM, SIGINT) takes no new claim and lets the current attempt finish
@@ -96,19 +97,19 @@ def checked_kinds(kinds: frozenset[str], templates) -> None:
             raise StartError(f"job kind {kind} has no retry rule") from None
 
 
-def reported_unserved(kinds: frozenset[str], repository) -> frozenset[str]:
-    """Log unfinished jobs of kinds this release cannot build; never refuse the start (owner decision В2).
+def reported_unserved(kinds: frozenset[str], repository, report) -> frozenset[str]:
+    """Log unfinished jobs of kinds this release cannot build; never refuse the start (Q21, Q22).
 
-    Such jobs stay untouched and the other kinds are delivered. This is the one line at
-    start; while running, the core's loop repeats it once per recovery period.
+    Such jobs stay untouched and the other kinds are delivered. ``report`` (the core's
+    UnservedReport) applies the log rule; the same object goes to the delivery loop, so
+    the start line and the loop's polls share one state and never double up.
     """
     unserved = repository.unserved_kinds(kinds)
-    if unserved:
-        logger.error("jobs of kinds this release cannot deliver are waiting: %s", ", ".join(sorted(unserved)))
+    report.note(unserved)
     return unserved
 
 
-async def _deliver(settings, *, kinds, templates, repository) -> int:
+async def _deliver(settings, *, kinds, templates, repository, unserved_report=None) -> int:
     from wortly.jobs.loop import DeliveryLoop
 
     from ..app import make_bot
@@ -133,7 +134,8 @@ async def _deliver(settings, *, kinds, templates, repository) -> int:
         channel = TelegramChannel(bot, templates=templates, web_app_url=settings.telegram.web_app_url,
                                   capacity=capacity, run=loop_runner(loop))
         delivery = DeliveryLoop(repository, config=settings.loop, kinds=kinds,
-                                capacity=DeliveryGate(capacity, channel, stop), channel=channel)
+                                capacity=DeliveryGate(capacity, channel, stop), channel=channel,
+                                unserved_report=unserved_report)
         worker = threading.Thread(target=delivery.run, args=(stop,), name="wortly-delivery")
         worker.start()
         logger.info("delivery started")
@@ -146,6 +148,7 @@ async def _deliver(settings, *, kinds, templates, repository) -> int:
 
 def serve(settings) -> int:
     from wortly.jobs.kinds import discover
+    from wortly.jobs.loop import UnservedReport
     from wortly.jobs.repository import JobRepository
     from wortly.operations.connections import lock_timeout_connections, open_connection_pool
 
@@ -157,8 +160,10 @@ def serve(settings) -> int:
     pool = open_connection_pool(settings.database, name="wortly-delivery")
     try:
         repository = JobRepository(lock_timeout_connections(pool.connection, settings.lock_timeout))
-        reported_unserved(kinds.names, repository)
-        return asyncio.run(_deliver(settings, kinds=kinds, templates=templates, repository=repository))
+        report = UnservedReport()
+        reported_unserved(kinds.names, repository, report)
+        return asyncio.run(_deliver(settings, kinds=kinds, templates=templates, repository=repository,
+                                    unserved_report=report))
     finally:
         pool.close()
 

@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 import threading
+import time
 from uuid import uuid4
 
 import pytest
@@ -24,7 +25,7 @@ from psycopg import sql  # noqa: E402
 from conftest import TELEGRAM_SETTINGS  # noqa: E402
 from fakes.telegram_api import WEB_APP_URL  # noqa: E402
 from wortly.jobs.kinds import discover as discover_kinds  # noqa: E402
-from wortly.jobs.loop import DeliveryLoop, DeliveryLoopConfig  # noqa: E402
+from wortly.jobs.loop import DeliveryLoop, DeliveryLoopConfig, UnservedReport  # noqa: E402
 from wortly.jobs.repository import JobRepository, lift_block  # noqa: E402
 from wortly.jobs.retry_policy import RetryPolicyConfig  # noqa: E402
 from wortly.storage import apply_migrations  # noqa: E402
@@ -101,7 +102,7 @@ def delivery(database, telegram, bot_loop):
     stop = threading.Event()
     clock = [NOW]
 
-    def make(owner: str = "delivery-a", *, bridge=None):
+    def make(owner: str = "delivery-a", *, bridge=None, report=None, monotonic=time.monotonic):
         capacity = TelegramCapacity(1000, wait=stop.wait)
         channel = TelegramChannel(bot, templates=discover_templates(), web_app_url=WEB_APP_URL,
                                   capacity=capacity, run=bridge or run)
@@ -110,7 +111,8 @@ def delivery(database, telegram, bot_loop):
                                     recovery_period=timedelta(minutes=1), poll_interval=timedelta(milliseconds=5),
                                     max_failed_preflights=3, retry=RetryPolicyConfig(nondelivery_delay=D))
         loop = DeliveryLoop(repository, config=config, kinds=discover_kinds(),
-                            capacity=DeliveryGate(capacity, channel, stop), channel=channel)
+                            capacity=DeliveryGate(capacity, channel, stop), channel=channel,
+                            monotonic=monotonic, unserved_report=report)
         return loop, repository, capacity
 
     yield make, stop
@@ -185,15 +187,42 @@ def test_another_403_is_repeated_after_the_delay_and_leaves_no_mark(database, te
 def test_a_job_of_a_kind_without_a_builder_is_reported_once_and_does_not_stop_the_start(database, caplog):
     repository = JobRepository(database, clock=lambda: NOW)
     kinds = discover_kinds().names
-    assert reported_unserved(kinds, repository) == frozenset()
+    assert reported_unserved(kinds, repository, UnservedReport()) == frozenset()
     profile, _ = approved_recipient(database)
     with database() as db, db.transaction():
         repository.enqueue(db, logical_key="future_kind:1", profile_id=profile, kind="future_kind",
                            available_at=NOW, payload={})
     with caplog.at_level("ERROR", logger="wortly_telegram.delivery.main"):
-        assert reported_unserved(kinds, repository) == frozenset({"future_kind"})
+        assert reported_unserved(kinds, repository, UnservedReport()) == frozenset({"future_kind"})
     lines = [record for record in caplog.records if "future_kind" in record.getMessage()]
     assert len(lines) == 1
+
+
+def test_waiting_jobs_of_an_unknown_kind_stay_untouched_while_known_ones_are_delivered(database, telegram,
+                                                                                        delivery, caplog):
+    make, stop = delivery
+    clock = [0.0]
+    repository = JobRepository(database, clock=lambda: NOW)
+    report = UnservedReport(monotonic=lambda: clock[0])
+    loop, _, _ = make(report=report, monotonic=lambda: clock[0])
+    profile, request = approved_recipient(database)
+    with database() as db, db.transaction():
+        waiting = repository.enqueue(db, logical_key="future_kind:1", profile_id=profile, kind="future_kind",
+                                     available_at=NOW, payload={"secret": "body"}).job_id
+    known = enqueue(database, repository, profile, request)
+    before = state(database, waiting)
+    with caplog.at_level("ERROR"):
+        reported_unserved(discover_kinds().names, repository, report)
+        for minutes in (0, 30, 61):
+            clock[0] = minutes * 60.0
+            loop.run_once(stop)
+            loop.run_once(stop)
+    assert state(database, known) == (("completed", None), [("sent", None)])
+    assert state(database, waiting) == before == (("ready", None), [])
+    messages = [record.getMessage() for record in caplog.records if record.levelname == "ERROR"]
+    # At start, then again only after more than an hour; the loop's polls share the start's report.
+    assert messages == ["1 job kinds this release cannot deliver are waiting: future_kind"] * 2
+    assert not any("body" in message or str(waiting) in message or str(profile) in message for message in messages)
 
 
 def test_unknown_is_final_and_never_sent_again(database, telegram, delivery):
