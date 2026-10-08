@@ -14,7 +14,6 @@ MARK = "# WORKING TEXT (not set by the specification)"
 WORKING_TEXTS = (
     ("start.py", "TEXTS"),
     ("webapp.py", "BUTTON_LABELS"),
-    ("webapp.py", "CARD_BUTTON_LABELS"),
     ("messages/access_approved.py", "TEXTS"),
     ("messages/access_request.py", "REQUESTS_ACCESS"),
     ("messages/access_request.py", "APPROVE_LABELS"),
@@ -34,9 +33,11 @@ WORKING_TEXTS = (
     ("service/access.py", "TRY_LATER"),
 )
 
-# Constants whose wording the owner approved (R10, 08.10.2026): they carry the approval mark instead.
-APPROVED = "# Wording approved by the owner (R10, 08.10.2026); display conditions follow TA."
+# Constants whose wording the owner approved (R10, S05; 08.10.2026): they carry the approval mark instead.
+# The basis (R10 or S05) varies, so the check accepts any basis after the common prefix.
+APPROVED = "# Wording approved by the owner ("
 APPROVED_TEXTS = (
+    ("webapp.py", "CARD_BUTTON_LABELS"),
     ("messages/inbox_message.py", "HEADINGS"),
     ("messages/inbox_message.py", "SENDER_LABELS"),
     ("messages/inbox_message.py", "NUMBER_LABELS"),

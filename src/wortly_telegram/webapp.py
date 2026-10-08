@@ -31,8 +31,7 @@ BUTTON_LABELS: dict[Language, str] = {
 }
 
 
-# WORKING TEXT (not set by the specification): the label of the button that opens the card
-# of a complaint (answer Q20); the old bot has none; final wording waits for the owner.
+# Wording approved by the owner (S05, 08.10.2026); display conditions follow TA.
 CARD_BUTTON_LABELS: dict[Language, str] = {
     "ru": "Открыть карточку",
     "uk": "Відкрити картку",
