@@ -375,7 +375,8 @@ def test_a_service_secret_that_is_not_64_lowercase_hex_stops_the_start_without_t
     assert content not in message and str(secret_file) not in message
 
 
-@pytest.mark.parametrize("content", [SERVICE_SECRET + "\n", "\n" + SERVICE_SECRET + "\n", SERVICE_SECRET])
+@pytest.mark.parametrize("content", [SERVICE_SECRET + "\n", "\n" + SERVICE_SECRET + "\n", SERVICE_SECRET,
+                                     SERVICE_SECRET + "\r\n", "  " + SERVICE_SECRET + " \t\n", "\t" + SERVICE_SECRET])
 def test_a_service_secret_of_64_lowercase_hex_is_read_whatever_surrounds_its_line(tmp_path, bot_text, secret_file,
                                                                                   content):
     from wortly_telegram.config import load_bot_settings
