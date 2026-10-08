@@ -60,6 +60,21 @@ async def test_each_method_posts_the_actor_and_its_arguments(core, gateway):
         {"actor_telegram_id": "5005", "command_id": str(command), "expected_version": "7", "mode": "automatic"}]
 
 
+async def test_a_retried_contact_carries_its_age(core, gateway):
+    # PP31 finding 1.8: a live contact sends no age, a retry tells how long ago it happened.
+    await gateway.note_contact(PRINCIPAL, age_ms=0)
+    await gateway.note_contact(PRINCIPAL, age_ms=12_345)
+    assert core.bodies("/internal/v1/contact") == [{"actor_telegram_id": "5005"},
+                                                   {"actor_telegram_id": "5005", "age_ms": 12_345}]
+
+
+@pytest.mark.parametrize("age", [-1, 1.5, "5", True])
+async def test_a_malformed_contact_age_is_refused_before_the_core_is_asked(core, gateway, age):
+    with pytest.raises(ValueError):
+        await gateway.note_contact(PRINCIPAL, age_ms=age)
+    assert core.bodies("/internal/v1/contact") == []
+
+
 async def test_the_profile_summary_is_the_core_answer(core, gateway):
     profile = {"role": "owner", "status": "admitted", "ui_language": None}
     core.answer("/internal/v1/admission/summary", httpx.Response(200, json={"profile": profile}))

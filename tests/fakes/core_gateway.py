@@ -62,8 +62,8 @@ class FakeCoreGateway:
         self._record("profile_summary", principal)
         return self.summaries.get(principal.external_id)
 
-    async def note_contact(self, principal: TelegramPrincipal) -> None:
-        self._record("note_contact", principal)
+    async def note_contact(self, principal: TelegramPrincipal, *, age_ms: int = 0) -> None:
+        self._record("note_contact", principal, **({"age_ms": age_ms} if age_ms else {}))
         self.blocked.discard(principal.external_id)
 
     async def decide(self, principal: TelegramPrincipal, **arguments: Any) -> Any:

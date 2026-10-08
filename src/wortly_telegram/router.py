@@ -30,6 +30,20 @@ failure or a timeout (CONTACT_TIMEOUT) is logged by class only and never stops t
 to the user. Whether a real Telegram bot delivers the unblock update is checked on a test
 bot before acceptance (Я18, TC §13.6); the tests here hand the update to the Application.
 
+A contact the core did not take because it was unreachable, too slow or failing
+(CoreUnavailable, a timeout) would otherwise be lost: the update is confirmed to Telegram
+anyway, and an unblock update never comes again (PP31, finding 1.8). It is tried again in
+the background after each pause of CONTACT_RETRY_DELAYS, then given up; one retry per
+user at a time, since one successful contact covers every earlier one; a newer unanswered
+contact moves that retry's time to itself, and one that came while a retry's call ran is
+noted right after that call succeeds. A retry tells the core how long ago the contact
+happened, so the core dates it back and does not lift a
+block the user made after it. The answer to the user and the next updates never wait
+for it. A refusal of the core (another CoreError)
+is not repeated. The retries live in this process only: a restart drops them. The update
+is not held back unconfirmed instead, because one failing contact would then stop every
+later update of the bot.
+
 Text input (T2, answer 2.6 б): a service function may claim the next plain text of a
 chat with ``text_input`` (the owner's reason for a rejection). The router hands a plain
 text, not a command, to the first function whose input waits for that chat and whose
@@ -53,6 +67,7 @@ from importlib import import_module
 import logging
 import pkgutil
 import re
+import time
 from typing import Any, Literal, Protocol
 from uuid import UUID, uuid5
 
@@ -62,7 +77,7 @@ from telegram.ext import (
     Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, TypeHandler, filters,
 )
 
-from .gateway import principal_of
+from .gateway import CoreUnavailable, principal_of
 from .reply import send_reply
 from .start import send_start
 
@@ -76,6 +91,12 @@ ALLOWED_UPDATES = ("message", "callback_query", "my_chat_member")
 # PTB handles updates one at a time, so a hanging core call would hold the whole bot;
 # the contact note is best effort and is given up after this many seconds.
 CONTACT_TIMEOUT = 2.0
+# Pauses before each background retry of a contact the core did not take: about four
+# minutes in all, enough for a core restart, then the retry ends (root decision, pending
+# owner: technical values, PP31 finding 1.8).
+CONTACT_RETRY_DELAYS = (2.0, 10.0, 30.0, 60.0, 120.0)
+# The core's bound of a contact's age (internal API ContactRequest.age_ms).
+CONTACT_AGE_MAX_MS = 600_000
 
 # Fixed for good: the same update must give the same command_id in every release.
 COMMAND_NAMESPACE = UUID("34f1fd3d-1a7a-4b83-983e-b6478ea6bbc1")
@@ -86,7 +107,7 @@ _PREFIX = re.compile(r"[a-z][a-z0-9_]{0,15}")
 
 
 class Gateway(Protocol):
-    async def note_contact(self, principal: Any) -> None: ...
+    async def note_contact(self, principal: Any, *, age_ms: int = 0) -> None: ...
 
     async def profile_summary(self, principal: Any) -> dict | None: ...
 
@@ -99,6 +120,11 @@ class BotContext:
     gateway: Gateway
     web_app_url: str
     sleep: Callable[[float], Awaitable[None]] = field(default=asyncio.sleep, repr=False)
+    # Background contact retries by Telegram ID; the task objects are kept so they run on.
+    contact_retries: dict[str, asyncio.Task] = field(default_factory=dict, repr=False, compare=False)
+    # The newest unanswered contact of each user with a retry: its age is counted from it.
+    contact_seen: dict[str, float] = field(default_factory=dict, repr=False, compare=False)
+    monotonic: Callable[[], float] = field(default=time.monotonic, repr=False)
 
 
 Handle = Callable[[Update, BotContext], Awaitable[None]]
@@ -214,14 +240,64 @@ async def answer_anything_else(update: Update, context: BotContext) -> None:
     await send_start(update, context)
 
 
-async def note_contact(update: Update, context: BotContext) -> None:
-    """Tell the core the user wrote; nothing here may keep the user from an answer."""
+def _retryable(error: BaseException) -> bool:
+    """The core gave no answer (down, slow, failing), as opposed to refusing the contact."""
+    return isinstance(error, (CoreUnavailable, TimeoutError))
+
+
+async def _contact_once(context: BotContext, principal: Any, age_ms: int = 0) -> BaseException | None:
     try:
         # A timed-out call is cancelled with its HTTP request; its result is not needed.
-        await asyncio.wait_for(context.gateway.note_contact(principal_of(update)), CONTACT_TIMEOUT)
+        await asyncio.wait_for(context.gateway.note_contact(principal, age_ms=age_ms), CONTACT_TIMEOUT)
     except Exception as error:  # noqa: BLE001 - best effort by design
         # The class only: the core's message may quote data (TC:273, T1).
         logger.warning("note_contact failed: %s", type(error).__name__)
+        return error
+    return None
+
+
+async def _retry_contact(context: BotContext, principal: Any) -> None:
+    key = principal.external_id
+    try:
+        pause_first = True
+        for pause in CONTACT_RETRY_DELAYS:
+            if pause_first:
+                await context.sleep(pause)
+            # Counted from the newest unanswered contact (QA Н2): the core then dates the
+            # return no earlier than it was proven. At most CONTACT_AGE_MAX_MS, the core's
+            # bound; the retries end well before it.
+            sent_from = context.contact_seen[key]
+            age_ms = min(CONTACT_AGE_MAX_MS, max(0, round((context.monotonic() - sent_from) * 1000)))
+            error = await _contact_once(context, principal, age_ms)
+            if error is None:
+                if context.contact_seen[key] <= sent_from:
+                    logger.info("note_contact retried: done")
+                    return
+                # A newer contact failed while this call ran (QA Д2): note it too, at once,
+                # since the core answers again; it takes the next place of the same series.
+                pause_first = False
+                continue
+            if not _retryable(error):
+                return
+            pause_first = True
+        logger.warning("note_contact given up after the last retry")
+    finally:
+        context.contact_retries.pop(key, None)
+        context.contact_seen.pop(key, None)
+
+
+async def note_contact(update: Update, context: BotContext) -> None:
+    """Tell the core the user wrote; nothing here may keep the user from an answer."""
+    principal = principal_of(update)
+    key = principal.external_id
+    happened_at = context.monotonic()
+    error = await _contact_once(context, principal)
+    if error is None or not _retryable(error):
+        return
+    # A newer unanswered contact moves the running retry's time forward; one retry per user.
+    context.contact_seen[key] = max(context.contact_seen.get(key, happened_at), happened_at)
+    if key not in context.contact_retries:
+        context.contact_retries[key] = asyncio.get_running_loop().create_task(_retry_contact(context, principal))
 
 
 def _private(update: Update) -> bool:

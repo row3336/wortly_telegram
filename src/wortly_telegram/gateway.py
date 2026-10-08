@@ -243,13 +243,18 @@ class HttpCoreGateway:
             raise CoreUnavailable()
         return dict(profile)
 
-    async def note_contact(self, principal: TelegramPrincipal) -> None:
-        """The principal wrote to the bot: lift its "bot blocked" mark, if any (answer 2.5).
+    async def note_contact(self, principal: TelegramPrincipal, *, age_ms: int = 0) -> None:
+        """The principal wrote to the bot or unblocked it: lift its "bot blocked" mark, if any.
 
-        Idempotent and needs no admission. The router gives it CONTACT_TIMEOUT and never
-        lets its failure keep the user from an answer.
+        Answer 2.5, Я18. Idempotent and needs no admission. The router gives it
+        CONTACT_TIMEOUT and never lets its failure keep the user from an answer.
+        ``age_ms`` tells the core how long ago the contact happened when the router can
+        note it only by a later retry (PP31, finding 1.8); a live contact sends none.
         """
-        await self.client.answer("/contact", _actor(principal), status=204)
+        if type(age_ms) is not int or age_ms < 0:
+            raise ValueError("A contact's age is a non-negative number of milliseconds")
+        body = _actor(principal) | ({"age_ms": age_ms} if age_ms else {})
+        await self.client.answer("/contact", body, status=204)
 
     async def decide(self, principal: TelegramPrincipal, *, command_id: UUID, request_id: UUID,
                      expected_version: int, approve: bool, reason: str | None) -> dict:

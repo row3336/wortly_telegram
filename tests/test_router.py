@@ -13,9 +13,10 @@ from telegram import Update
 from conftest import feed
 from fakes.core_gateway import FakeCoreGateway, GatewayCall
 from fakes.telegram_api import WEB_APP_URL, callback_update, message_update, my_chat_member_update, user
-from wortly_telegram.gateway import principal_of
+from wortly_telegram import router
+from wortly_telegram.gateway import CoreError, CoreUnavailable, principal_of
 from wortly_telegram.router import (
-    RouterError, ServiceFunction, command_id, discover,
+    BotContext, RouterError, ServiceFunction, command_id, discover, note_contact,
 )
 from wortly_telegram.start import TEXTS
 
@@ -41,12 +42,12 @@ class ContactGateway(FakeCoreGateway):
         self.events: list[tuple[str, str]] = []
         self.contact_error: Exception | None = None
 
-    async def note_contact(self, principal) -> None:
+    async def note_contact(self, principal, *, age_ms: int = 0) -> None:
         self.events.append(("contact", principal.external_id))
         if self.contact_error is not None:
-            self.calls.append(GatewayCall("note_contact", principal))
+            self.calls.append(GatewayCall("note_contact", principal, {"age_ms": age_ms} if age_ms else {}))
             raise self.contact_error
-        await super().note_contact(principal)
+        await super().note_contact(principal, age_ms=age_ms)
 
 
 @pytest.fixture
@@ -241,7 +242,7 @@ async def test_a_hanging_contact_note_does_not_hold_the_answer_longer_than_the_t
         telegram, gateway, make_application, monkeypatch, caplog):
     from wortly_telegram import router
 
-    async def hang(principal) -> None:
+    async def hang(principal, **_) -> None:
         await asyncio.sleep(30)
 
     gateway.note_contact = hang
@@ -251,6 +252,229 @@ async def test_a_hanging_contact_note_does_not_hold_the_answer_longer_than_the_t
         await asyncio.wait_for(feed(application, message_update("hello", from_user=user(5005))), timeout=5)
     assert len(telegram.calls_to("sendMessage")) == 1
     assert "note_contact failed: TimeoutError" in " ".join(r.getMessage() for r in caplog.records)
+
+
+# -- a contact the core did not take is retried in the background (PP31, finding 1.8) ----
+
+class FlakyGateway(FakeCoreGateway):
+    """The core gives no answer to the first ``failures`` contacts, then takes them."""
+
+    def __init__(self, failures: int, error: Exception | None = None) -> None:
+        super().__init__()
+        self.failures = failures
+        self.failure = error or CoreUnavailable()
+
+    async def note_contact(self, principal, *, age_ms: int = 0) -> None:
+        if self.failures:
+            self.failures -= 1
+            self.calls.append(GatewayCall("note_contact", principal, {"age_ms": age_ms}))
+            raise self.failure
+        await super().note_contact(principal, age_ms=age_ms)
+        self.calls[-1].arguments.setdefault("age_ms", age_ms)
+
+
+class Clock:
+    """A monotonic clock that the pauses move forward."""
+
+    def __init__(self) -> None:
+        self.now = 100.0
+        self.pauses: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.pauses.append(seconds)
+        self.now += seconds + 0.25  # each retry's own call takes a little time too
+
+
+def bot_context(telegram, gateway, clock) -> BotContext:
+    return BotContext(bot=telegram.bot(), gateway=gateway, web_app_url=WEB_APP_URL, sleep=clock.sleep,
+                      monotonic=clock)
+
+
+def an_update(telegram, data) -> Update:
+    return Update.de_json(data, telegram.bot())
+
+
+async def retries_done(context: BotContext) -> None:
+    await asyncio.gather(*context.contact_retries.values())
+
+
+def ages(gateway) -> list[int]:
+    return [call.arguments.get("age_ms", 0) for call in gateway.calls if call.operation == "note_contact"]
+
+
+@pytest.mark.parametrize("error", [CoreUnavailable(), TimeoutError()], ids=["unavailable", "timeout"])
+async def test_an_unanswered_contact_is_retried_with_its_age_until_the_core_takes_it(telegram, caplog, error):
+    gateway, clock = FlakyGateway(2, error), Clock()
+    gateway.blocked = {"5005"}
+    context = bot_context(telegram, gateway, clock)
+    with caplog.at_level(logging.INFO):
+        await note_contact(an_update(telegram, my_chat_member_update("member", from_user=user(5005))), context)
+        assert list(context.contact_retries) == ["5005"]   # the handler did not wait for the retries
+        await retries_done(context)
+    assert clock.pauses == [2.0, 10.0]
+    # The age is the time since the update, so the core dates the contact back.
+    assert ages(gateway) == [0, 2250, 12500]
+    assert gateway.blocked == set() and context.contact_retries == {}
+    logged = [record.getMessage() for record in caplog.records]
+    assert "note_contact retried: done" in logged
+    assert not any("5005" in line for line in logged)
+
+
+async def test_retries_end_after_the_last_pause(telegram, caplog):
+    gateway, clock = FlakyGateway(100), Clock()
+    context = bot_context(telegram, gateway, clock)
+    with caplog.at_level(logging.INFO):
+        await note_contact(an_update(telegram, message_update("hello", from_user=user(5005))), context)
+        await retries_done(context)
+    assert clock.pauses == list(router.CONTACT_RETRY_DELAYS)
+    assert len(ages(gateway)) == 1 + len(router.CONTACT_RETRY_DELAYS)
+    assert context.contact_retries == {}
+    assert "note_contact given up after the last retry" in [record.getMessage() for record in caplog.records]
+
+
+async def test_a_refusal_of_the_core_is_not_retried(telegram):
+    gateway, clock = FlakyGateway(1, CoreError("FORBIDDEN", status=403)), Clock()
+    context = bot_context(telegram, gateway, clock)
+    await note_contact(an_update(telegram, message_update("hello", from_user=user(5005))), context)
+    assert context.contact_retries == {} and clock.pauses == [] and ages(gateway) == [0]
+
+
+async def test_a_retry_stops_at_a_refusal(telegram):
+    gateway, clock = FlakyGateway(1), Clock()
+    context = bot_context(telegram, gateway, clock)
+    await note_contact(an_update(telegram, message_update("hello", from_user=user(5005))), context)
+    gateway.failures, gateway.failure = 1, CoreError("FORBIDDEN", status=403)
+    await retries_done(context)
+    assert clock.pauses == [2.0] and len(ages(gateway)) == 2
+
+
+async def test_one_retry_per_user_at_a_time(telegram):
+    gateway, clock = FlakyGateway(3), Clock()
+    context = bot_context(telegram, gateway, clock)
+    gate = asyncio.Event()
+
+    async def held(seconds: float) -> None:
+        await gate.wait()
+        await clock.sleep(seconds)
+    context = BotContext(bot=context.bot, gateway=gateway, web_app_url=WEB_APP_URL, sleep=held, monotonic=clock)
+    await note_contact(an_update(telegram, message_update("one", from_user=user(5005))), context)
+    first = context.contact_retries["5005"]
+    await note_contact(an_update(telegram, message_update("two", from_user=user(5005), message_id=2)), context)
+    await note_contact(an_update(telegram, message_update("hi", from_user=user(6006))), context)
+    assert context.contact_retries["5005"] is first and set(context.contact_retries) == {"5005", "6006"}
+    gate.set()
+    await retries_done(context)
+    assert context.contact_retries == {}
+
+
+async def test_a_newer_unanswered_contact_moves_the_retrys_age_to_itself(telegram):
+    # QA Н2 (probe b1): the retry is dated from the newest contact, not the first one.
+    gateway, clock = FlakyGateway(2), Clock()
+    gate = asyncio.Event()
+
+    async def held(seconds: float) -> None:
+        await gate.wait()
+        await clock.sleep(seconds)
+    context = BotContext(bot=telegram.bot(), gateway=gateway, web_app_url=WEB_APP_URL, sleep=held, monotonic=clock)
+    await note_contact(an_update(telegram, message_update("one", from_user=user(5005))), context)   # t=100
+    first = context.contact_retries["5005"]
+    clock.now += 50.0
+    await note_contact(an_update(telegram, message_update("two", from_user=user(5005), message_id=2)),
+                       context)                                                                      # t=150
+    assert context.contact_retries["5005"] is first
+    gate.set()
+    await retries_done(context)
+    # The retry went at t=152.25: 2250 ms after the newest contact (52250 before the fix).
+    assert ages(gateway) == [0, 0, 2250]
+    assert context.contact_retries == {} and context.contact_seen == {}
+
+
+async def test_an_older_time_never_moves_the_retrys_age_back(telegram):
+    gateway, clock = FlakyGateway(2), Clock()
+    gate = asyncio.Event()
+
+    async def held(seconds: float) -> None:
+        await gate.wait()
+        await clock.sleep(seconds)
+    context = BotContext(bot=telegram.bot(), gateway=gateway, web_app_url=WEB_APP_URL, sleep=held, monotonic=clock)
+    await note_contact(an_update(telegram, message_update("one", from_user=user(5005))), context)   # t=100
+    clock.now = 90.0  # a clock reading that is not later: the newest stays
+    await note_contact(an_update(telegram, message_update("two", from_user=user(5005), message_id=2)), context)
+    assert context.contact_seen == {"5005": 100.0}
+    gate.set()
+    await retries_done(context)
+
+
+async def test_a_contact_that_fails_during_a_successful_retry_call_is_noted_too(telegram):
+    # QA Д2 (probe b7): the retry's call is in flight with an age from t=100; the user writes
+    # again at t=150 and that live contact fails too. When the call succeeds, the newer
+    # contact is sent at once, with its own age, instead of ending the series.
+    clock = Clock()
+    release, in_call = asyncio.Event(), asyncio.Event()
+
+    class SlowRetry(FlakyGateway):
+        async def note_contact(self, principal, *, age_ms: int = 0) -> None:
+            if age_ms == 2250:                 # the first retry's call: hold it open
+                in_call.set()
+                await release.wait()
+            await super().note_contact(principal, age_ms=age_ms)
+
+    gateway = SlowRetry(1)
+    context = bot_context(telegram, gateway, clock)
+    await note_contact(an_update(telegram, message_update("one", from_user=user(5005))), context)  # t=100
+    await asyncio.wait_for(in_call.wait(), 5)
+    clock.now = 160.0
+    gateway.failures = 1
+    await note_contact(an_update(telegram, message_update("two", from_user=user(5005), message_id=2)), context)
+    assert context.contact_seen["5005"] == 160.0
+    clock.now = 163.0
+    release.set()
+    await retries_done(context)
+    assert context.contact_retries == {} and context.contact_seen == {}
+    # failed t=100, failed t=160, the held retry (age from t=100), then at once the newer
+    # contact with its age from t=160; no extra pause.
+    assert ages(gateway) == [0, 0, 2250, 3000]
+    assert clock.pauses == [2.0]
+
+
+async def test_a_newer_contact_after_the_last_place_of_the_series_ends_it(telegram, monkeypatch):
+    # The extra call takes a place of the same bounded series: no place left, no call.
+    monkeypatch.setattr(router, "CONTACT_RETRY_DELAYS", (2.0,))
+    clock = Clock()
+    release, in_call = asyncio.Event(), asyncio.Event()
+
+    class SlowRetry(FlakyGateway):
+        async def note_contact(self, principal, *, age_ms: int = 0) -> None:
+            if age_ms:
+                in_call.set()
+                await release.wait()
+            await super().note_contact(principal, age_ms=age_ms)
+
+    gateway = SlowRetry(1)
+    context = bot_context(telegram, gateway, clock)
+    await note_contact(an_update(telegram, message_update("one", from_user=user(5005))), context)
+    await asyncio.wait_for(in_call.wait(), 5)
+    clock.now = 160.0
+    gateway.failures = 1
+    await note_contact(an_update(telegram, message_update("two", from_user=user(5005), message_id=2)), context)
+    release.set()
+    await retries_done(context)
+    assert ages(gateway) == [0, 0, 2250] and context.contact_retries == {}
+
+
+async def test_the_age_never_exceeds_the_cores_bound(telegram):
+    gateway, clock = FlakyGateway(1), Clock()
+    context = bot_context(telegram, gateway, clock)
+
+    async def stalled(seconds: float) -> None:
+        clock.now += 3600  # a stalled process: far longer than the retries plan
+    context = BotContext(bot=context.bot, gateway=gateway, web_app_url=WEB_APP_URL, sleep=stalled, monotonic=clock)
+    await note_contact(an_update(telegram, message_update("hello", from_user=user(5005))), context)
+    await retries_done(context)
+    assert ages(gateway) == [0, router.CONTACT_AGE_MAX_MS]
 
 
 # -- subject and command_id ---------------------------------------------------------------
