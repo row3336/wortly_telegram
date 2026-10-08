@@ -157,13 +157,14 @@ def test_the_delivery_bot_has_no_rate_limiter():
     assert type(bot) is Bot and not isinstance(bot, ExtBot)
 
 
-# --- inbox_message: the sender block and number reach the owner as plain text, without a button ---
+# --- inbox_message: the sender block and number reach the owner as plain text; a complaint has its card button ---
 
 INBOX_ID = "5d1a7c3e-0000-4000-8000-000000000001"
 CARD = {"card_id": "5d1a7c3e-0000-4000-8000-000000000002", "lemma": "Haus"}
 SENDER = {"first_name": "Anna", "username": "anna_k"}
 SENDER_LABELS = {"ru": "От:", "uk": "Від:", "en": "From:"}
 NUMBER_LABELS = {"ru": "Номер обращения:", "uk": "Номер звернення:", "en": "Message number:"}
+CARD_LABELS = {"ru": "Открыть карточку", "uk": "Відкрити картку", "en": "Open the card"}
 INBOX_CASES = [("complaint", CARD), ("feedback", None)]
 
 
@@ -174,8 +175,7 @@ def inbox_facts(language, category, card, **extra):
 
 @pytest.mark.parametrize(("category", "card"), INBOX_CASES)
 @pytest.mark.parametrize("language", ["ru", "uk", "en"])
-def test_an_inbox_message_with_the_sender_is_plain_text_without_a_button(telegram, make_channel, language,
-                                                                        category, card):
+def test_an_inbox_message_with_the_sender_is_plain_text(telegram, make_channel, language, category, card):
     result = make_channel().deliver(snapshot("inbox_message", inbox_facts(language, category, card, sender=SENDER)))
     assert result is SENT
     [call] = telegram.calls_to("sendMessage")
@@ -183,8 +183,32 @@ def test_an_inbox_message_with_the_sender_is_plain_text_without_a_button(telegra
     assert lines[1] == f"{SENDER_LABELS[language]} Anna (@anna_k)"
     assert lines[2] == f"{NUMBER_LABELS[language]} {INBOX_ID}"
     assert lines[3:] == ["", "Secret wording"]
-    # The complaint's button to its card is not built (no way to open a card from the bot yet).
-    assert "parse_mode" not in call.params and "reply_markup" not in call.params
+    assert "parse_mode" not in call.params
+
+
+@pytest.mark.parametrize("language", ["ru", "uk", "en"])
+def test_a_complaint_has_one_web_app_button_to_its_card(telegram, make_channel, language):
+    result = make_channel().deliver(snapshot("inbox_message", inbox_facts(language, "complaint", CARD, sender=SENDER)))
+    assert result is SENT
+    [call] = telegram.calls_to("sendMessage")
+    # The same configured address, with the card id in the query (answer Q20, variant A).
+    assert call.json("reply_markup") == {"inline_keyboard": [[{
+        "text": CARD_LABELS[language], "web_app": {"url": f"{WEB_APP_URL}?card={CARD['card_id']}"}}]]}
+
+
+@pytest.mark.parametrize("language", ["ru", "uk", "en"])
+def test_feedback_without_a_card_has_no_button(telegram, make_channel, language):
+    result = make_channel().deliver(snapshot("inbox_message", inbox_facts(language, "feedback", None, sender=SENDER)))
+    assert result is SENT
+    [call] = telegram.calls_to("sendMessage")
+    assert "reply_markup" not in call.params
+
+
+def test_a_complaint_whose_card_id_is_no_uuid_fails_before_any_network_call(telegram, make_channel):
+    card = {"card_id": "../settings?x=1", "lemma": "Haus"}
+    result = make_channel().deliver(snapshot("inbox_message", inbox_facts("en", "complaint", card)))
+    assert result.reason == "pre_send_error"
+    assert telegram.calls_to("sendMessage") == []
 
 
 @pytest.mark.parametrize(("category", "card"), INBOX_CASES)
@@ -220,3 +244,19 @@ def test_the_log_of_an_inbox_delivery_has_no_name_username_or_text(telegram, mak
         channel.deliver(snapshot("inbox_message", inbox_facts("ru", "feedback", None, sender=sender)))
     assert caplog.text
     assert not any(value in caplog.text for value in ("Anna", "anna_k", "Secret wording", "777000"))
+
+
+@pytest.mark.parametrize("script", [
+    lambda t: t.fail("sendMessage", 400, "Bad Request"),
+    lambda t: t.fail("sendMessage", 429, "Too Many Requests", retry_after=3),
+    transport(httpx.ConnectError),
+], ids=["400", "429", "connect-error"])
+def test_the_log_of_a_complaint_delivery_has_no_card_id_or_address(telegram, make_channel, caplog, library_levels,
+                                                                   script):
+    channel = make_channel()
+    script(telegram)
+    logs.quiet_libraries()
+    with caplog.at_level("DEBUG"):
+        channel.deliver(snapshot("inbox_message", inbox_facts("ru", "complaint", CARD, sender=SENDER)))
+    assert caplog.text
+    assert not any(value in caplog.text for value in (CARD["card_id"], "card=", WEB_APP_URL, "Haus"))

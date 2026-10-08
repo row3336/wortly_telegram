@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
+from uuid import UUID
 
 from wortly.identity.languages import initial_language
 
@@ -56,11 +57,17 @@ class CallbackButton:
 
 @dataclass(frozen=True)
 class OutgoingMessage:
-    """Plain text without parse_mode (ВП-16) and either the Mini App button or rows of callback buttons."""
+    """Plain text without parse_mode (ВП-16) and at most one keyboard source.
+
+    The keyboard is the Mini App button, the Mini App button that opens one card
+    (``app_card``, answer Q20), or rows of callback buttons. ``app_card`` is a card id
+    only: it grants nothing, the Mini App still signs in with its own initData.
+    """
 
     text: str = field(repr=False)
     app_button: bool = False
     buttons: tuple[tuple[CallbackButton, ...], ...] = ()
+    app_card: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if type(self.text) is not str or not self.text.strip():
@@ -71,9 +78,22 @@ class OutgoingMessage:
                 isinstance(row, tuple) and row and all(isinstance(button, CallbackButton) for button in row)
                 for row in self.buttons):
             raise RenderError("buttons must be non-empty rows of CallbackButton")
-        if self.app_button and self.buttons:
-            # No kind needs both; one keyboard source keeps the channel's markup simple.
-            raise RenderError("A message has the Mini App button or callback buttons, not both")
+        if self.app_card is not None and not _canonical_uuid(self.app_card):
+            # The Mini App opens only a well-formed card id; anything else would be dropped there.
+            raise RenderError("app_card must be a card id")
+        if sum((self.app_button, bool(self.buttons), self.app_card is not None)) > 1:
+            # No kind needs two; one keyboard source keeps the channel's markup simple.
+            raise RenderError("A message has one keyboard source: the Mini App button, a card button or callback buttons")
+
+
+def _canonical_uuid(value: object) -> bool:
+    """True for a UUID in its canonical lower-case form, the form the core hands over."""
+    if type(value) is not str:
+        return False
+    try:
+        return str(UUID(value)) == value
+    except ValueError:
+        return False
 
 
 Render = Callable[[Mapping[str, Any], Language], OutgoingMessage]

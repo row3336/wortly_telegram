@@ -38,14 +38,17 @@ def number_line(language: str) -> str:
 def test_a_complaint_names_the_card_and_carries_the_text(language):
     message = TEMPLATE.render(body("complaint", "Wrong plural", CARD), language)
     assert message.text == f"{COMPLAINT_HEADINGS[language]}\n{number_line(language)}\n\nWrong plural"
-    assert message.app_button is False
+    # The card button (answer Q20): the card id only, never the general Mini App button.
+    assert message.app_card == CARD["card_id"]
+    assert message.app_button is False and message.buttons == ()
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_feedback_has_no_card_and_carries_the_text(language):
     message = TEMPLATE.render(body("feedback", "Nice app"), language)
     assert message.text == f"{FEEDBACK_HEADINGS[language]}\n{number_line(language)}\n\nNice app"
-    assert message.app_button is False
+    assert message.app_card is None
+    assert message.app_button is False and message.buttons == ()
 
 
 @pytest.mark.parametrize(("category", "card"), [("complaint", CARD), ("feedback", None)])
@@ -175,6 +178,16 @@ def test_the_sender_values_are_output_as_they_are_without_markup_or_cutting(lang
 def test_the_sender_block_adds_no_button(language):
     message = TEMPLATE.render(body("complaint", "x", CARD, sender=SENDER), language)
     assert message.app_button is False and message.buttons == ()
+    assert message.app_card == CARD["card_id"]
+    assert TEMPLATE.render(body("feedback", "x", sender=SENDER), language).app_card is None
+
+
+@pytest.mark.parametrize("card_id", ["not-a-card", "5D1A7C3E-0000-4000-8000-000000000002",
+                                     "5d1a7c3e000040008000000000000002", "5d1a7c3e-0000-4000-8000-000000000002&x=1"])
+def test_a_complaint_card_id_that_is_no_canonical_uuid_is_refused(card_id):
+    with pytest.raises(RenderError) as error:
+        TEMPLATE.render(body("complaint", "x", {"card_id": card_id, "lemma": "Haus"}), "en")
+    assert card_id not in str(error.value)
 
 
 @pytest.mark.parametrize("bad", [

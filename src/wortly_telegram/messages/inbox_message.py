@@ -14,8 +14,9 @@ The user's text, the first name and the username are untrusted. The channel send
 text without parse_mode (ВП-16), so they are placed as they are: nothing escapes them and
 nothing here may add markup around them.
 
-A complaint has no button to its card yet: the Mini App cannot be opened at a given card
-from the bot (it reads no launch parameter), so the message stays without reply_markup.
+A complaint carries one button that opens its card in the Mini App (answer Q20): the
+message names the card id, the channel builds the web_app button (webapp.card_keyboard).
+A message without a card has no button.
 The text is not cut or split: the channel makes one sendMessage call, and a message over
 Telegram's 4096 characters is refused there (BadRequest, a known failure of the attempt).
 The upper bound of a user's text is an open question to the owner (2.19а).
@@ -103,17 +104,18 @@ def render(body: Mapping[str, Any], language: Language) -> OutgoingMessage:
     if category == COMPLAINT:
         if not isinstance(card, Mapping) or set(card) != _CARD_FIELDS:
             raise RenderError("A complaint names the card")
-        _text(card["card_id"], "card_id")
+        card_id = _text(card["card_id"], "card_id")
         heading = HEADINGS[COMPLAINT][language].format(lemma=_text(card["lemma"], "lemma"))
     elif category == FEEDBACK:
         if card is not None:
             raise RenderError("A message without a complaint names no card")
+        card_id = None
         heading = HEADINGS[FEEDBACK][language]
     else:
         raise RenderError("The inbox_message category is unknown")
     number = f"{NUMBER_LABELS[language]} {inbox_id}"
     lines = [heading, number] if sender is None else [heading, sender, number]
-    return OutgoingMessage("\n".join(lines) + f"\n\n{text}")
+    return OutgoingMessage("\n".join(lines) + f"\n\n{text}", app_card=card_id)
 
 
 TEMPLATE = Template(KIND, render, examples=(

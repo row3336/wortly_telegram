@@ -14,6 +14,7 @@ MARK = "# WORKING TEXT (not set by the specification)"
 WORKING_TEXTS = (
     ("start.py", "TEXTS"),
     ("webapp.py", "BUTTON_LABELS"),
+    ("webapp.py", "CARD_BUTTON_LABELS"),
     ("messages/access_approved.py", "TEXTS"),
     ("messages/inbox_message.py", "HEADINGS"),
     ("messages/inbox_message.py", "SENDER_LABELS"),
