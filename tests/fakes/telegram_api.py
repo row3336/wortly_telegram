@@ -172,3 +172,23 @@ def callback_update(data: str, *, from_user: dict, callback_id: str = "777", cha
                                "message": {"message_id": message_id, "date": 0, "text": "old",
                                            "chat": {"id": chat_id, "type": "private"},
                                            "from": {"id": BOT_ID, "is_bot": True, "first_name": "Wortly"}}}}
+
+
+def my_chat_member_update(new_status: str, *, from_user: dict, old_status: str = "kicked",
+                          chat_id: int | None = None, chat_type: str = "private",
+                          update_id: int | None = None) -> dict:
+    """The bot's own membership change in a chat: "kicked" when blocked, "member" when unblocked."""
+    chat_id = from_user["id"] if chat_id is None else chat_id
+    chat: dict[str, Any] = {"id": chat_id, "type": chat_type}
+    if chat_type == "private":
+        chat["first_name"] = from_user["first_name"]
+    bot = {"id": BOT_ID, "is_bot": True, "first_name": "Wortly"}
+
+    def member(status: str) -> dict:
+        data: dict[str, Any] = {"status": status, "user": bot}
+        if status == "kicked":
+            data["until_date"] = 0
+        return data
+    return {"update_id": next(_update_ids) if update_id is None else update_id,
+            "my_chat_member": {"chat": chat, "from": from_user, "date": 0,
+                               "old_chat_member": member(old_status), "new_chat_member": member(new_status)}}

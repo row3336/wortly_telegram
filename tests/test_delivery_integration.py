@@ -25,7 +25,7 @@ from conftest import TELEGRAM_SETTINGS  # noqa: E402
 from fakes.telegram_api import WEB_APP_URL  # noqa: E402
 from wortly.jobs.kinds import discover as discover_kinds  # noqa: E402
 from wortly.jobs.loop import DeliveryLoop, DeliveryLoopConfig  # noqa: E402
-from wortly.jobs.repository import JobRepository  # noqa: E402
+from wortly.jobs.repository import JobRepository, lift_block  # noqa: E402
 from wortly.jobs.retry_policy import RetryPolicyConfig  # noqa: E402
 from wortly.storage import apply_migrations  # noqa: E402
 from wortly_telegram.app import make_bot  # noqa: E402
@@ -146,19 +146,27 @@ def test_rate_limited_is_known_failed_with_retry_not_before(database, telegram, 
     assert len(telegram.calls_to("sendMessage")) == 1
 
 
-def test_a_confirmed_block_closes_the_job_and_marks_the_recipient(database, telegram, delivery):
+def test_a_confirmed_block_keeps_the_button_back_until_the_mark_is_lifted(database, telegram, delivery):
     # Before answer 2.5 any 403 was "blocked" and repeated after the delay; now the
-    # confirmed block is final and leaves the mark that a later message lifts.
+    # confirmed block is not repeated and leaves the mark that a later contact lifts.
+    # The login button is kept back meanwhile and delivered after the contact (2.28а).
     make, stop = delivery
     loop, repository, _ = make()
     profile, request = approved_recipient(database)
     job = enqueue(database, repository, profile, request)
     telegram.fail("sendMessage", 403, "Forbidden: bot was blocked by the user")
     loop.run_once(stop)
-    assert state(database, job) == (("failed", None), [("known_failed", "blocked")])
+    assert state(database, job) == (("ready", NOW + timedelta(hours=24)), [("known_failed", "blocked")])
     with database() as db:
         assert db.execute("SELECT count(*) FROM telegram_blocks WHERE profile_id=%s",
                           (profile,)).fetchone()[0] == 1
+    assert loop.run_once(stop).status == "idle"
+    with database() as db, db.transaction(), db.cursor() as cursor:
+        cursor.execute("SELECT 1 FROM user_coordination WHERE profile_id=%s FOR UPDATE", (profile,))
+        assert lift_block(cursor, profile) == 1
+    assert loop.run_once(stop).status == "sent"
+    assert state(database, job) == (("completed", None), [("known_failed", "blocked"), ("sent", None)])
+    assert len(telegram.calls_to("sendMessage")) == 2
 
 
 def test_another_403_is_repeated_after_the_delay_and_leaves_no_mark(database, telegram, delivery):

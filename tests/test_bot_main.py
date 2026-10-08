@@ -71,7 +71,7 @@ async def test_the_leader_polls_answers_and_confirms_the_updates_when_it_stops(t
     assert len(telegram.calls_to("sendMessage")) == 1
     polls = telegram.calls_to("getUpdates")
     # Spelled out, not read from the constant: a new update type must be a deliberate change (ВП-6).
-    assert json.loads(polls[0].params["allowed_updates"]) == ["message", "callback_query"]
+    assert json.loads(polls[0].params["allowed_updates"]) == ["message", "callback_query", "my_chat_member"]
     assert polls[0].params["timeout"] == "7"
     # The last getUpdates, made while stopping, confirms what was fetched (offset = last id + 1).
     assert polls[-1].params["offset"] == "4101"

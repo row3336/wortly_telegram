@@ -8,6 +8,8 @@ declaration, a command or callback prefix claimed twice stops the start.
 - Only private chats are served: Telegram accepts a web_app button only there.
 - Only new messages and button presses are handled; an edited message is neither
   requested nor handled (ВП-6), because it would repeat the command of its original.
+  The bot's own membership update (my_chat_member) is requested for one purpose only:
+  the contact note of an unblock (below). It is no command and gets no answer.
 - ``audience`` filters the interface only. The core checks every right again for the
   principal under its locks (§7.1 п.2); the role in a summary is not a right, so an
   owner function also needs an admitted status (QA C-ADAPTER).
@@ -17,12 +19,16 @@ declaration, a command or callback prefix claimed twice stops the start.
   delivered twice (two pollers, a restart) is the same command for the core.
 
 Contact (answer 2.5): any private message or button press of a user proves the bot is not
-blocked, so the first handler of every such update (handler group -1, before the service
-functions and the default answer) calls ``gateway.note_contact`` exactly once. The call is
-best effort: a failure or a timeout (CONTACT_TIMEOUT) is logged by class only and never stops
-the answer to the user.
-Which events count as "wrote again" is the owner's open question 2.28б; until it is
-answered, every private message and button press counts.
+blocked (2.28б), and so does Telegram's report that the user unblocked the bot: a
+my_chat_member update of a private chat, made by that chat's user, whose new status is
+"member" (Я18). The first handler of every such update (handler group -1, before the
+service functions and the default answer) calls ``gateway.note_contact`` exactly once; the
+core lifts the "bot blocked" mark and releases the one-off notices it kept back (2.28а).
+A block reported the same way ("kicked") calls nothing: the mark is set only by a
+delivery that Telegram refused as blocked (answer 2.5). The call is best effort: a
+failure or a timeout (CONTACT_TIMEOUT) is logged by class only and never stops the answer
+to the user. Whether a real Telegram bot delivers the unblock update is checked on a test
+bot before acceptance (Я18, TC §13.6); the tests here hand the update to the Application.
 
 Text input (T2, answer 2.6 б): a service function may claim the next plain text of a
 chat with ``text_input`` (the owner's reason for a rejection). The router hands a plain
@@ -51,6 +57,7 @@ from typing import Any, Literal, Protocol
 from uuid import UUID, uuid5
 
 from telegram import Bot, Update
+from telegram.constants import ChatMemberStatus
 from telegram.ext import (
     Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, TypeHandler, filters,
 )
@@ -64,7 +71,7 @@ logger = logging.getLogger(__name__)
 
 SERVICE_PACKAGE = "wortly_telegram.service"
 # What the poller asks Telegram for: exactly the update types handled below (ВП-6).
-ALLOWED_UPDATES = ("message", "callback_query")
+ALLOWED_UPDATES = ("message", "callback_query", "my_chat_member")
 
 # PTB handles updates one at a time, so a hanging core call would hold the whole bot;
 # the contact note is best effort and is given up after this many seconds.
@@ -222,6 +229,13 @@ def _private(update: Update) -> bool:
     return chat is not None and chat.type == chat.PRIVATE
 
 
+def _unblocked(update: Update) -> bool:
+    """Telegram reports that the user of this private chat unblocked the bot (Я18)."""
+    change = update.my_chat_member
+    return (change is not None and change.new_chat_member.status == ChatMemberStatus.MEMBER
+            and change.from_user.id == change.chat.id)
+
+
 def _command_or_button(update: Update) -> bool:
     return update.callback_query is not None or (
         update.message is not None and bool(filters.COMMAND.check_update(update)))
@@ -245,7 +259,10 @@ async def take_text(update: Update, context: BotContext, functions: Sequence[Ser
 
 
 def install(application: Application, context: BotContext, functions: Sequence[ServiceFunction]) -> None:
-    """Register the contact note (group -1), /start, the service functions and, last, the default handler."""
+    """Register the contact note (group -1), /start, the service functions and, last, the default handler.
+
+    An unblock update reaches only the contact note: no handler of group 0 matches it.
+    """
     functions = (START, *functions)
     _checked(functions)
     new_private_message = filters.ChatType.PRIVATE & filters.UpdateType.MESSAGE
@@ -261,7 +278,13 @@ def install(application: Application, context: BotContext, functions: Sequence[S
         return callback
 
     async def contact(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-        if _private(update) and (update.message is not None or update.callback_query is not None):
+        if not _private(update):
+            return
+        if update.message is not None or update.callback_query is not None:
+            await note_contact(update, context)
+        elif _unblocked(update):
+            # No IDs or names (TC:273): the line only shows the event reached the bot.
+            logger.info("unblock event received")
             await note_contact(update, context)
 
     async def interrupt(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:

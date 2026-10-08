@@ -12,7 +12,7 @@ from telegram import Update
 
 from conftest import feed
 from fakes.core_gateway import FakeCoreGateway, GatewayCall
-from fakes.telegram_api import WEB_APP_URL, callback_update, message_update, user
+from fakes.telegram_api import WEB_APP_URL, callback_update, message_update, my_chat_member_update, user
 from wortly_telegram.gateway import principal_of
 from wortly_telegram.router import (
     RouterError, ServiceFunction, command_id, discover,
@@ -159,6 +159,66 @@ async def test_a_message_lifts_the_block_mark(gateway, make_application):
     application = await make_application()
     await feed(application, message_update("hello", from_user=user(5005)))
     assert gateway.blocked == {"6006"}
+
+
+async def test_an_unblock_event_is_one_contact_and_gets_no_answer(telegram, gateway, make_application, caplog):
+    # Я18: Telegram's report that the user unblocked the bot lifts the mark without a new message.
+    gateway.blocked = {"5005"}
+    probe = Probe(gateway)
+    application = await make_application(functions=(probe_function(probe),))
+    with caplog.at_level(logging.INFO):
+        await feed(application, my_chat_member_update("member", from_user=user(5005, first_name="Ivanna")))
+    assert contacts(gateway) == ["5005"]
+    assert gateway.blocked == set()
+    # An event is not a message: no answer, no service function, no command.
+    assert telegram.calls == [call for call in telegram.calls if call.method == "getMe"]
+    assert probe.seen == []
+    logged = [record.getMessage() for record in caplog.records]
+    assert "unblock event received" in logged
+    assert not any("5005" in line or "Ivanna" in line for line in logged)
+
+
+async def test_repeated_unblock_events_are_repeated_idempotent_contacts(gateway, make_application):
+    gateway.blocked = {"5005"}
+    application = await make_application()
+    event = my_chat_member_update("member", from_user=user(5005), update_id=9001)
+    await feed(application, event)
+    await feed(application, event)  # the same update twice (two pollers, a restart)
+    await feed(application, message_update("hello", from_user=user(5005)))
+    assert contacts(gateway) == ["5005", "5005", "5005"]
+    assert gateway.blocked == set()
+
+
+@pytest.mark.parametrize("make", [
+    # A block is no contact: the mark comes only from a delivery refused as blocked (answer 2.5).
+    lambda: my_chat_member_update("kicked", from_user=user(5005), old_status="member"),
+    # Not the user's own change of a private chat: someone else, or a group.
+    lambda: my_chat_member_update("member", from_user=user(6006), chat_id=5005),
+    lambda: my_chat_member_update("member", from_user=user(5005), chat_id=-1001, chat_type="group",
+                                  old_status="left"),
+], ids=["block", "other-user", "group"])
+async def test_other_membership_updates_are_no_contact(telegram, gateway, make_application, make):
+    gateway.blocked = {"5005"}
+    application = await make_application()
+    await feed(application, make())
+    assert contacts(gateway) == []
+    assert gateway.blocked == {"5005"}
+    assert telegram.calls == [call for call in telegram.calls if call.method == "getMe"]
+
+
+async def test_a_failing_unblock_contact_is_logged_by_class_only(gateway, make_application, caplog):
+    gateway.contact_error = RuntimeError("host=db.internal user 5005")
+    application = await make_application()
+    with caplog.at_level(logging.DEBUG):
+        await feed(application, my_chat_member_update("member", from_user=user(5005)))
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    assert "note_contact failed: RuntimeError" in logged
+    assert "db.internal" not in logged and "5005" not in logged
+
+
+def test_the_poller_asks_for_the_unblock_update():
+    from wortly_telegram.router import ALLOWED_UPDATES
+    assert ALLOWED_UPDATES == ("message", "callback_query", "my_chat_member")
 
 
 async def test_a_failing_contact_note_never_keeps_the_user_from_the_answer(telegram, gateway, make_application,
