@@ -7,6 +7,7 @@ and hands the send to the event loop that owns the Bot (delivery.main.loop_runne
 from __future__ import annotations
 
 from datetime import timedelta
+import logging
 import time
 
 import httpx
@@ -18,6 +19,7 @@ from conftest import TELEGRAM_SETTINGS
 from fakes.jobs import envelope, snapshot
 from fakes.telegram_api import WEB_APP_URL
 from wortly.jobs.channel import SENT, ChannelResult
+from wortly_telegram import logs
 from wortly_telegram.app import make_bot
 from wortly_telegram.delivery.channel import TelegramChannel
 from wortly_telegram.delivery.main import loop_runner
@@ -153,3 +155,68 @@ def test_the_delivery_bot_has_no_rate_limiter():
     # AIORateLimiter waits inside the call, after the sending decision (TC:282, §3.5 п.3).
     bot = make_bot(TELEGRAM_SETTINGS)
     assert type(bot) is Bot and not isinstance(bot, ExtBot)
+
+
+# --- inbox_message: the sender block and number reach the owner as plain text, without a button ---
+
+INBOX_ID = "5d1a7c3e-0000-4000-8000-000000000001"
+CARD = {"card_id": "5d1a7c3e-0000-4000-8000-000000000002", "lemma": "Haus"}
+SENDER = {"first_name": "Anna", "username": "anna_k"}
+SENDER_LABELS = {"ru": "От:", "uk": "Від:", "en": "From:"}
+NUMBER_LABELS = {"ru": "Номер обращения:", "uk": "Номер звернення:", "en": "Message number:"}
+INBOX_CASES = [("complaint", CARD), ("feedback", None)]
+
+
+def inbox_facts(language, category, card, **extra):
+    body = {"inbox_id": INBOX_ID, "category": category, "text": "Secret wording", "card": card, **extra}
+    return envelope("inbox_message", language=language, telegram_user_id="777000", body=body)
+
+
+@pytest.mark.parametrize(("category", "card"), INBOX_CASES)
+@pytest.mark.parametrize("language", ["ru", "uk", "en"])
+def test_an_inbox_message_with_the_sender_is_plain_text_without_a_button(telegram, make_channel, language,
+                                                                        category, card):
+    result = make_channel().deliver(snapshot("inbox_message", inbox_facts(language, category, card, sender=SENDER)))
+    assert result is SENT
+    [call] = telegram.calls_to("sendMessage")
+    lines = call.params["text"].splitlines()
+    assert lines[1] == f"{SENDER_LABELS[language]} Anna (@anna_k)"
+    assert lines[2] == f"{NUMBER_LABELS[language]} {INBOX_ID}"
+    assert lines[3:] == ["", "Secret wording"]
+    # The complaint's button to its card is not built (no way to open a card from the bot yet).
+    assert "parse_mode" not in call.params and "reply_markup" not in call.params
+
+
+@pytest.mark.parametrize(("category", "card"), INBOX_CASES)
+def test_an_old_inbox_body_without_the_sender_is_still_delivered(telegram, make_channel, category, card):
+    result = make_channel().deliver(snapshot("inbox_message", inbox_facts("en", category, card)))
+    assert result is SENT
+    [call] = telegram.calls_to("sendMessage")
+    assert f"Message number: {INBOX_ID}" in call.params["text"] and "From:" not in call.params["text"]
+
+
+@pytest.fixture
+def library_levels():
+    levels = {name: logging.getLogger(name).level for name in logs.LIBRARY_LOGGERS}
+    yield
+    for name, level in levels.items():
+        logging.getLogger(name).setLevel(level)
+
+
+@pytest.mark.parametrize("script", [
+    lambda t: t.fail("sendMessage", 400, "Bad Request"),
+    lambda t: t.fail("sendMessage", 429, "Too Many Requests", retry_after=3),
+    transport(httpx.ConnectError),
+], ids=["400", "429", "connect-error"])
+@pytest.mark.parametrize("sender", [SENDER, {"first_name": 7, "username": "anna_k"}], ids=["sent", "bad-sender"])
+def test_the_log_of_an_inbox_delivery_has_no_name_username_or_text(telegram, make_channel, caplog, library_levels,
+                                                                  script, sender):
+    channel = make_channel()
+    script(telegram)
+    # As in the running process (logs.private_logs): PTB and httpx stay at WARNING, since at DEBUG
+    # they write the texts and names they send.
+    logs.quiet_libraries()
+    with caplog.at_level("DEBUG"):
+        channel.deliver(snapshot("inbox_message", inbox_facts("ru", "feedback", None, sender=sender)))
+    assert caplog.text
+    assert not any(value in caplog.text for value in ("Anna", "anna_k", "Secret wording", "777000"))

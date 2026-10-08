@@ -16,6 +16,8 @@ WORKING_TEXTS = (
     ("webapp.py", "BUTTON_LABELS"),
     ("messages/access_approved.py", "TEXTS"),
     ("messages/inbox_message.py", "HEADINGS"),
+    ("messages/inbox_message.py", "SENDER_LABELS"),
+    ("messages/inbox_message.py", "NUMBER_LABELS"),
     ("messages/access_request.py", "REQUESTS_ACCESS"),
     ("messages/access_request.py", "APPROVE_LABELS"),
     ("messages/access_request.py", "REJECT_LABELS"),
