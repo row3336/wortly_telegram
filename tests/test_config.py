@@ -13,12 +13,18 @@ import textwrap
 
 import pytest
 
-from fakes.core_gateway import core_settings
+from fakes.core_gateway import CORE_SECRET, core_settings
 from wortly_telegram.config import (
     BotConfigurationError, BotSettings, CoreSettings, DeliverySettings, TelegramSettings, checked_internal_url,
 )
 from wortly_telegram.leader import LeaderConfig
 from wortly_telegram.webapp import WebAppAddressError, checked_address
+
+
+# 32 bytes as 64 lowercase hex characters: the only form the loader accepts.
+SERVICE_SECRET = "0123456789abcdef" * 4
+KEY_FORMAT_ERROR = ("core.service_secret_file must hold exactly 64 lowercase hexadecimal "
+                    "characters (0-9, a-f)")
 
 
 def telegram_settings(**overrides) -> TelegramSettings:
@@ -114,7 +120,7 @@ def test_one_call_to_the_core_must_end_before_the_lease_minus_the_margin(read, a
 
 def test_core_settings_hide_the_secret_and_sum_the_call_deadline():
     settings = core_settings()
-    assert "synthetic-service-secret" not in repr(settings)
+    assert CORE_SECRET not in repr(settings)
     assert settings.request_budget == timedelta(seconds=3)
     with pytest.raises(ValueError):
         core_settings(read_timeout=timedelta(0))
@@ -239,7 +245,7 @@ def token_file(tmp_path: Path) -> Path:
 @pytest.fixture
 def secret_file(tmp_path: Path) -> Path:
     path = tmp_path / "service_secret"
-    path.write_text("synthetic-service-secret\n")
+    path.write_text(SERVICE_SECRET + "\n")
     path.chmod(0o600)
     return path
 
@@ -284,10 +290,10 @@ def test_bot_settings_load_every_key_and_refuse_unknown_ones(tmp_path, bot_text)
     settings = load_bot_settings(path)
     assert settings.leader.renew_period == timedelta(seconds=20)
     assert settings.poll_timeout == timedelta(seconds=25)
-    assert settings.core == CoreSettings(internal_url="http://127.0.0.1:8001", service_secret="synthetic-service-secret",
+    assert settings.core == CoreSettings(internal_url="http://127.0.0.1:8001", service_secret=SERVICE_SECRET,
                                          connect_timeout=timedelta(seconds=2), read_timeout=timedelta(seconds=5))
     assert settings.telegram.bot_token == "123:secret"
-    assert "synthetic-service-secret" not in repr(settings) and "123:secret" not in repr(settings)
+    assert SERVICE_SECRET not in repr(settings) and "123:secret" not in repr(settings)
     path.write_text(bot_text + "allowed_updates = 1\n")
     with pytest.raises(BotConfigurationError):
         load_bot_settings(path)
@@ -351,6 +357,34 @@ def test_a_service_secret_file_without_one_printable_line_stops_the_start(tmp_pa
     assert content.strip() == "" or content.strip() not in str(raised.value)
 
 
+@pytest.mark.parametrize("content", [
+    SERVICE_SECRET[:-1], SERVICE_SECRET + "0", SERVICE_SECRET.upper(), "A" + SERVICE_SECRET[1:],
+    "g" + SERVICE_SECRET[1:], "synthetic-service-secret", SERVICE_SECRET[:32] + " " + SERVICE_SECRET[33:],
+    SERVICE_SECRET[:32] + "\t" + SERVICE_SECRET[33:], "0x" + SERVICE_SECRET[2:], "ключ" * 16,
+])
+def test_a_service_secret_that_is_not_64_lowercase_hex_stops_the_start_without_the_value(tmp_path, bot_text,
+                                                                                         secret_file, content):
+    from wortly_telegram.config import load_bot_settings
+    secret_file.write_text(content + "\n")
+    path = tmp_path / "bot.toml"
+    path.write_text(bot_text)
+    with pytest.raises(BotConfigurationError) as raised:
+        load_bot_settings(path)
+    message = str(raised.value)
+    assert message == KEY_FORMAT_ERROR
+    assert content not in message and str(secret_file) not in message
+
+
+@pytest.mark.parametrize("content", [SERVICE_SECRET + "\n", "\n" + SERVICE_SECRET + "\n", SERVICE_SECRET])
+def test_a_service_secret_of_64_lowercase_hex_is_read_whatever_surrounds_its_line(tmp_path, bot_text, secret_file,
+                                                                                  content):
+    from wortly_telegram.config import load_bot_settings
+    secret_file.write_text(content)
+    path = tmp_path / "bot.toml"
+    path.write_text(bot_text)
+    assert load_bot_settings(path).core.service_secret == SERVICE_SECRET
+
+
 @pytest.mark.parametrize("name", ["WORTLY_SERVICE_SECRET", "WORTLY_CORE_SERVICE_SECRET", "SERVICE_SECRET",
                                   "X_WORTLY_SERVICE_SECRET", "CORE_SERVICE_SECRET_FILE"])
 def test_the_service_secret_comes_only_from_its_file(tmp_path, bot_text, secret_file, monkeypatch, name):
@@ -358,7 +392,7 @@ def test_the_service_secret_comes_only_from_its_file(tmp_path, bot_text, secret_
     monkeypatch.setenv(name, "secret-from-the-environment")
     path = tmp_path / "bot.toml"
     path.write_text(bot_text)
-    assert load_bot_settings(path).core.service_secret == "synthetic-service-secret"
+    assert load_bot_settings(path).core.service_secret == SERVICE_SECRET
     # Without a readable file the environment does not stand in for it.
     path.write_text(bot_text.replace(str(secret_file), str(tmp_path / "missing")))
     with pytest.raises(BotConfigurationError, match="core.service_secret_file cannot be read"):
@@ -482,7 +516,18 @@ def test_a_secret_file_open_to_others_stops_the_bot_with_the_key_only(tmp_path, 
         load_bot_settings(path)
     message = str(raised.value)
     assert message == key_error(key)
-    assert "123:secret" not in message and "synthetic-service-secret" not in message and str(file) not in message
+    assert "123:secret" not in message and SERVICE_SECRET not in message and str(file) not in message
+
+
+def test_the_mode_is_refused_before_the_format_of_the_service_secret(tmp_path, secret_file, bot_text):
+    from wortly_telegram.config import load_bot_settings
+    secret_file.write_text("not-a-hex-key\n")
+    secret_file.chmod(0o644)
+    path = tmp_path / "bot.toml"
+    path.write_text(bot_text)
+    with pytest.raises(BotConfigurationError) as raised:
+        load_bot_settings(path)
+    assert str(raised.value) == key_error("core.service_secret_file")
 
 
 @pytest.mark.parametrize("mode", [0o600, 0o400, 0o700])
@@ -491,7 +536,7 @@ def test_a_secret_file_closed_to_others_is_read(tmp_path, bot_text, secret_file,
     secret_file.chmod(mode)
     path = tmp_path / "bot.toml"
     path.write_text(bot_text)
-    assert load_bot_settings(path).core.service_secret == "synthetic-service-secret"
+    assert load_bot_settings(path).core.service_secret == SERVICE_SECRET
 
 
 def test_the_delivery_entry_exits_with_code_two_on_a_token_file_open_to_others(tmp_path, token_file, capsys):
@@ -519,7 +564,20 @@ def test_the_bot_entry_exits_with_code_two_on_a_secret_file_open_to_others(tmp_p
     captured = capsys.readouterr()
     assert captured.err == f"wortly bot: configuration error: {key_error(key)}\n"
     assert "123:secret" not in captured.err + captured.out
-    assert "synthetic-service-secret" not in captured.err + captured.out
+    assert SERVICE_SECRET not in captured.err + captured.out
+
+
+def test_the_bot_entry_exits_with_code_two_on_a_service_secret_of_the_wrong_format(tmp_path, secret_file, bot_text,
+                                                                                   capsys):
+    from wortly_telegram.bot_main import main
+    wrong = SERVICE_SECRET.upper()
+    secret_file.write_text(wrong + "\n")
+    path = tmp_path / "bot.toml"
+    path.write_text(bot_text)
+    assert main(["--config", str(path)]) == 2
+    captured = capsys.readouterr()
+    assert captured.err == f"wortly bot: configuration error: {KEY_FORMAT_ERROR}\n"
+    assert wrong not in captured.err + captured.out and str(secret_file) not in captured.err + captured.out
 
 
 def test_no_module_imports_a_private_name_of_the_core():

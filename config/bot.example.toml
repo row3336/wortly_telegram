@@ -26,7 +26,8 @@ poll_timeout_seconds = 25
 # Scheme, host and port only: no path and no trailing "/".
 internal_url = "http://127.0.0.1:8001"
 # Absolute path of the file with the same service secret as the api's
-# internal.service_secret_file: one line of printable ASCII.
+# internal.service_secret_file: one line of exactly 64 lowercase hex characters
+# (0-9, a-f), made with `openssl rand -hex 32`; any other form stops the start.
 service_secret_file = "/path/to/wortly/service_secret"
 # Seconds to wait for a connection to the core and for its answer; their sum is the
 # deadline of one call.

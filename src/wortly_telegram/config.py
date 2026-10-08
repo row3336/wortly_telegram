@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 import os
 from pathlib import Path
+import re
 import stat
 import tomllib
 from typing import TYPE_CHECKING
@@ -50,6 +51,9 @@ _LONGEST_LOCK_WAIT_MS = 2**31 - 1
 _LONGEST_SECONDS = 999_999_999 * 86_400
 # Any group or other permission bit on a secret file: read, write or execute (as the core).
 _OTHERS_ACCESS = stat.S_IRWXG | stat.S_IRWXO
+# The service secret is 32 random bytes written as lowercase hex (decisions Я23/Я24): the
+# same startup check as the core's. A string match proves the format, not randomness.
+_SERVICE_SECRET_FORMAT = re.compile(r"[0-9a-f]{64}")
 
 
 class BotConfigurationError(ValueError):
@@ -176,6 +180,15 @@ def _telegram(table) -> TelegramSettings:
         read_timeout=_seconds(table, "read_timeout_seconds"),
         write_timeout=_seconds(table, "write_timeout_seconds"),
         pool_timeout=_seconds(table, "pool_timeout_seconds"))
+
+
+def _service_secret(table) -> str:
+    secret = table.secret_file("service_secret_file")
+    # Same rule as the core's startup check; the message names the key, never the value.
+    if not _SERVICE_SECRET_FORMAT.fullmatch(secret):
+        raise BotConfigurationError(f"{table._key('service_secret_file')} must hold exactly 64 lowercase "
+                                    "hexadecimal characters (0-9, a-f)")
+    return secret
 
 
 def _seconds(table, key: str) -> timedelta:
@@ -330,7 +343,7 @@ def load_bot_settings(path: Path) -> BotSettings:
             standby_retry=_seconds(bot, "standby_retry_seconds"))
         internal = CoreSettings(
             internal_url=core.text("internal_url"),
-            service_secret=core.secret_file("service_secret_file"),
+            service_secret=_service_secret(core),
             connect_timeout=_seconds(core, "connect_timeout_seconds"),
             read_timeout=_seconds(core, "read_timeout_seconds"))
         return BotSettings(telegram=_telegram(telegram), core=internal, leader=leader,

@@ -196,7 +196,7 @@ print("bot process without a database driver")
 def bot_file(tmp_path: Path) -> Path:
     token, secret = tmp_path / "token", tmp_path / "service_secret"
     token.write_text("123:fake\n")
-    secret.write_text("synthetic-service-secret\n")
+    secret.write_text("0123456789abcdef" * 4 + "\n")
     token.chmod(0o600)
     secret.chmod(0o600)
     path = tmp_path / "bot.toml"
@@ -281,4 +281,4 @@ def test_the_service_secret_never_reaches_a_log_line_of_the_process(tmp_path, mo
             logging.getLogger(name).setLevel(value)
     assert len(lines) == 2
     captured = capsys.readouterr()
-    assert not [text for text in (*lines, captured.out, captured.err) if "synthetic-service-secret" in text]
+    assert not [text for text in (*lines, captured.out, captured.err) if "0123456789abcdef" in text]

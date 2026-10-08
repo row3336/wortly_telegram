@@ -180,7 +180,7 @@ def test_the_process_entries_run_inside_private_logs(tmp_path, monkeypatch, capt
                       "pool_timeout_seconds = 1\n")
     database = ('[database]\nconninfo = "host=/tmp port=5432 dbname=wortly_test user=wortly sslmode=disable"\n'
                 "connect_timeout_seconds = 5\npool_min_size = 0\npool_max_size = 1\npool_timeout_seconds = 5\n")
-    service_secret = "synthetic-service-secret-LOG"
+    service_secret = "0123456789abcdef" * 4
     secret_file = tmp_path / "service_secret"
     secret_file.write_text(service_secret + "\n")
     secret_file.chmod(0o600)
