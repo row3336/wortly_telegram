@@ -14,7 +14,7 @@ import pytest
 from conftest import TELEGRAM_SETTINGS
 from wortly.jobs.kinds import discover as discover_kinds
 from wortly_telegram.delivery.main import (
-    DeliveryGate, StartError, _deliver, checked_kinds, checked_readiness, loop_runner, serve,
+    DeliveryGate, StartError, _deliver, checked_kinds, loop_runner, reported_unserved, serve,
 )
 from wortly_telegram.messages.registry import TemplateRegistry, discover
 
@@ -101,28 +101,33 @@ class FakeRepository:
         return self.waiting - frozenset(kinds)
 
 
-def test_the_process_is_ready_without_jobs_of_unknown_kinds():
+def test_nothing_is_logged_without_jobs_of_unknown_kinds(caplog):
     kinds = discover_kinds().names
     repository = FakeRepository(waiting=frozenset(kinds))
-    checked_readiness(kinds, repository)
+    assert reported_unserved(kinds, repository) == frozenset()
     assert repository.asked == [kinds]
+    assert caplog.records == []
 
 
-def test_a_job_of_an_unknown_kind_makes_the_process_not_ready():
+def test_jobs_of_unknown_kinds_are_logged_once_by_name_and_do_not_refuse_the_start(caplog):
     repository = FakeRepository(waiting=frozenset({"brand_new_kind", "access_approved"}))
-    with pytest.raises(StartError, match="brand_new_kind") as raised:
-        checked_readiness(discover_kinds().names, repository)
-    assert "access_approved" not in str(raised.value)
+    with caplog.at_level("ERROR"):
+        unserved = reported_unserved(discover_kinds().names, repository)
+    assert unserved == frozenset({"brand_new_kind"})
+    assert [record.getMessage() for record in caplog.records] == [
+        "jobs of kinds this release cannot deliver are waiting: brand_new_kind"]
 
 
-def test_serve_does_not_start_with_a_job_of_an_unknown_kind(monkeypatch):
+def test_serve_starts_the_delivery_with_a_job_of_an_unknown_kind(monkeypatch, caplog):
     from wortly_telegram.delivery import main
 
-    async def never_reached(*args, **kwargs):
-        # A broken readiness check would get here, to the bot's getMe and the network.
-        raise AssertionError("the delivery must not start")
+    started = []
 
-    monkeypatch.setattr(main, "_deliver", never_reached)
+    async def fake_deliver(settings, *, kinds, templates, repository):
+        started.append((kinds.names, repository))
+        return 0
+
+    monkeypatch.setattr(main, "_deliver", fake_deliver)
     repository = FakeRepository(waiting=frozenset({"brand_new_kind"}))
     closed = []
     pool = SimpleNamespace(connection=None, close=lambda: closed.append(True))
@@ -131,10 +136,13 @@ def test_serve_does_not_start_with_a_job_of_an_unknown_kind(monkeypatch):
     monkeypatch.setitem(sys.modules, "wortly.operations.connections", SimpleNamespace(
         lock_timeout_connections=lambda connection, timeout: None, open_connection_pool=lambda *a, **k: pool))
     settings = SimpleNamespace(database=None, lock_timeout=None, telegram=TELEGRAM_SETTINGS)
-    with pytest.raises(StartError, match="brand_new_kind"):
-        serve(settings)
+    with caplog.at_level("ERROR"):
+        assert serve(settings) == 0
+    assert started == [(discover_kinds().names, repository)]  # the same repository: the jobs stay untouched
     assert repository.asked == [discover_kinds().names]
-    assert closed == [True]  # the pool is released when the start is refused
+    assert closed == [True]
+    assert [record.getMessage() for record in caplog.records] == [
+        "jobs of kinds this release cannot deliver are waiting: brand_new_kind"]
 
 
 class SlowToFinish:

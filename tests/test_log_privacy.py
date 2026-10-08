@@ -235,12 +235,15 @@ def test_the_adapter_logs_only_classes_and_outcomes():
     # takes a constant message and arguments that are class names or outcomes. Nothing is
     # formatted into the message itself (f-string, %, .format), and logger.exception is out:
     # it would attach the traceback and the exception text the call site did not choose.
-    # The only two calls that pass an error object are the start errors, whose messages name
-    # kinds and modules (registry and router errors), never data; they are listed one by one.
+    # The calls that pass an error object or kind names are listed one by one: the start errors
+    # name kinds and modules (registry and router errors), never data.
     source = Path(__file__).resolve().parents[1] / "src" / "wortly_telegram"
     start_errors = {
         ("bot_main.py", "bot not started: %s", ("error",)),
         ("delivery/main.py", "delivery not started: %s: %s", ("type(error).__name__", "error")),
+        # Kind names of waiting jobs (owner decision В2), never the jobs' content.
+        ("delivery/main.py", "jobs of kinds this release cannot deliver are waiting: %s",
+         ("', '.join(sorted(unserved))",)),
     }
     suspicious = []
     for path in source.rglob("*.py"):
