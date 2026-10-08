@@ -40,10 +40,10 @@ _OPTIONAL_FIELDS = frozenset({"sender"})
 _CARD_FIELDS = frozenset({"card_id", "lemma"})
 _SENDER_FIELDS = frozenset({"first_name", "username"})
 
-# WORKING TEXT (not set by the specification): the headings of the two kinds; the complaint
-# heading has the card's lemma in {lemma}. The old bot has only the labels (OLD bot/i18n.py
-# "inbox_reports", "inbox_feedback") and no message template to copy; final wording waits
-# for the owner (2.19/Q20).
+# Wording approved by the owner (R10, 08.10.2026); display conditions follow TA.
+# The headings of the two kinds; the complaint heading has the card's lemma in {lemma}.
+# The old bot has only the labels (OLD bot/i18n.py "inbox_reports", "inbox_feedback") and
+# no message template to copy (2.19/Q20).
 HEADINGS: dict[str, dict[Language, str]] = {
     COMPLAINT: {
         "ru": "⚠️ Жалоба на карточку «{lemma}»",
@@ -56,15 +56,15 @@ HEADINGS: dict[str, dict[Language, str]] = {
         "en": "✉️ Message to the developer",
     },
 }
-# WORKING TEXT (not set by the specification): the label of the sender line (answer Q20,
-# 4.5а-Н2); the old bot has none; final wording waits for the owner.
+# Wording approved by the owner (R10, 08.10.2026); display conditions follow TA.
+# The label of the sender line (answer Q20, 4.5а-Н2); the old bot has none.
 SENDER_LABELS: dict[Language, str] = {
     "ru": "От:",
     "uk": "Від:",
     "en": "From:",
 }
-# WORKING TEXT (not set by the specification): the label of the full inbox number (answer
-# Q20, 4.5а-Н2); the old bot has none; final wording waits for the owner.
+# Wording approved by the owner (R10, 08.10.2026); display conditions follow TA.
+# The label of the full inbox number (answer Q20, 4.5а-Н2); the old bot has none.
 NUMBER_LABELS: dict[Language, str] = {
     "ru": "Номер обращения:",
     "uk": "Номер звернення:",

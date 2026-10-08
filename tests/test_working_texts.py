@@ -16,9 +16,6 @@ WORKING_TEXTS = (
     ("webapp.py", "BUTTON_LABELS"),
     ("webapp.py", "CARD_BUTTON_LABELS"),
     ("messages/access_approved.py", "TEXTS"),
-    ("messages/inbox_message.py", "HEADINGS"),
-    ("messages/inbox_message.py", "SENDER_LABELS"),
-    ("messages/inbox_message.py", "NUMBER_LABELS"),
     ("messages/access_request.py", "REQUESTS_ACCESS"),
     ("messages/access_request.py", "APPROVE_LABELS"),
     ("messages/access_request.py", "REJECT_LABELS"),
@@ -36,6 +33,25 @@ WORKING_TEXTS = (
     ("service/access.py", "FORBIDDEN"),
     ("service/access.py", "TRY_LATER"),
 )
+
+# Constants whose wording the owner approved (R10, 08.10.2026): they carry the approval mark instead.
+APPROVED = "# Wording approved by the owner (R10, 08.10.2026); display conditions follow TA."
+APPROVED_TEXTS = (
+    ("messages/inbox_message.py", "HEADINGS"),
+    ("messages/inbox_message.py", "SENDER_LABELS"),
+    ("messages/inbox_message.py", "NUMBER_LABELS"),
+)
+
+
+@pytest.mark.parametrize(("module", "constant"), APPROVED_TEXTS)
+def test_the_constant_with_an_approved_text_follows_the_approval_mark(module, constant):
+    lines = (SRC / module).read_text(encoding="utf-8").splitlines()
+    start = next(index for index, line in enumerate(lines) if line.startswith(f"{constant}:"))
+    block = start
+    while block > 0 and lines[block - 1].startswith("#"):
+        block -= 1
+    assert lines[block].startswith(APPROVED), f"{module}: {constant} lacks the approval mark"
+    assert not any(MARK in line for line in lines[block:start])
 
 
 @pytest.mark.parametrize(("module", "constant"), WORKING_TEXTS)
