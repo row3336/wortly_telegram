@@ -9,11 +9,15 @@ from __future__ import annotations
 import ast
 from datetime import timedelta
 from pathlib import Path
+import re
+import subprocess
+import sys
 import textwrap
 
 import pytest
 
 from fakes.core_gateway import CORE_SECRET, core_settings
+from test_import_without_psycopg import probe_environment
 from wortly_telegram.config import (
     BotConfigurationError, BotSettings, CoreSettings, DeliverySettings, TelegramSettings, checked_internal_url,
 )
@@ -592,3 +596,44 @@ def test_no_module_imports_a_private_name_of_the_core():
                 offenders += [f"{path.name}:{node.lineno} {alias.name}" for alias in node.names
                               if private_module or alias.name.startswith("_")]
     assert offenders == []
+
+
+_LOAD_WITHOUT_DRIVER = """
+import sys
+sys.modules["psycopg"] = None
+sys.modules["psycopg_pool"] = None
+from pathlib import Path
+from wortly_telegram.config import load_bot_settings
+settings = load_bot_settings(Path(sys.argv[1]))
+loaded = sorted(n for n, m in sys.modules.items() if m is not None and n.split(".")[0].startswith("psycopg"))
+assert not loaded, loaded
+print("loaded", settings.core.internal_url)
+"""
+
+
+def test_the_bot_reads_its_configuration_with_psycopg_blocked(tmp_path, bot_text):
+    path = tmp_path / "bot.toml"
+    path.write_text(bot_text)
+    result = subprocess.run([sys.executable, "-c", _LOAD_WITHOUT_DRIVER, str(path)], env=probe_environment(),
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    assert "loaded http://127.0.0.1:8001" in result.stdout
+
+
+def test_the_service_secret_rule_is_the_cores_only_one(tmp_path, bot_text, monkeypatch):
+    from wortly.operations import config_file
+    from wortly_telegram.config import load_bot_settings
+    path = tmp_path / "bot.toml"
+    path.write_text(bot_text)
+    assert load_bot_settings(path).core.service_secret == SERVICE_SECRET
+    # Change the rule where the core keeps it: if the bot had a copy, it would not notice.
+    monkeypatch.setattr(config_file, "_SERVICE_SECRET_FORMAT", re.compile(r"[0-9a-f]{8}"))
+    with pytest.raises(BotConfigurationError) as raised:
+        load_bot_settings(path)
+    assert str(raised.value) == KEY_FORMAT_ERROR
+
+
+def test_the_bot_holds_no_copy_of_the_secret_rules():
+    source = (Path(__file__).resolve().parents[1] / "src" / "wortly_telegram" / "config.py").read_text("utf-8")
+    assert "re.compile" not in source and "[0-9a-f]" not in source
+    assert '" " <=' not in source and "_BotTable" not in source and "S_IRWXG" not in source

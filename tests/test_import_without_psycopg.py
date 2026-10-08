@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import os
+import importlib.util
 from pathlib import Path
 import subprocess
 import sys
@@ -39,6 +40,8 @@ MODULES = (
     "wortly_telegram.messages.registry",
     "wortly_telegram.messages.plural",
     "wortly_telegram.messages.access_approved",
+    # The core module the bot reads its configuration with: it must not need the driver.
+    "wortly.operations.config_file",
 )
 
 _PROBE = """
@@ -69,11 +72,26 @@ print("imported", len(sys.argv) - 1)
 """
 
 
-def run_probe(*modules: str) -> subprocess.CompletedProcess:
+def _site_packages_of_telegram_library() -> str:
+    # The probe clears PYTHONPATH, so an interpreter that does not carry python-telegram-bot
+    # itself (the core's, run with the bot's site-packages on PYTHONPATH) would not find it.
+    # Naming the directory it lives in keeps the check as strict: psycopg is blocked in the
+    # probe anyway, whatever that directory holds.
+    spec = importlib.util.find_spec("telegram")
+    assert spec is not None and spec.submodule_search_locations, "python-telegram-bot is not importable"
+    return str(Path(next(iter(spec.submodule_search_locations))).parent)
+
+
+def probe_environment() -> dict[str, str]:
     environment = {key: value for key, value in os.environ.items() if not key.startswith("PYTHON")}
-    environment["PYTHONPATH"] = os.pathsep.join((str(ROOT / "src"), str(CORE_SRC)))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (str(ROOT / "src"), str(CORE_SRC), _site_packages_of_telegram_library()))
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    return subprocess.run([sys.executable, "-c", _PROBE, *modules], cwd=ROOT, env=environment,
+    return environment
+
+
+def run_probe(*modules: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, "-c", _PROBE, *modules], cwd=ROOT, env=probe_environment(),
                           capture_output=True, text=True, timeout=120)
 
 
