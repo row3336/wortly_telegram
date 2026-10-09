@@ -1,9 +1,10 @@
 """The core's delivery loop with the Telegram channel on PostgreSQL wortly_test (design T-D §9.3).
 
 Needs psycopg in the telegram environment, which the owner installs (§9.5 б); without
-it the whole module is skipped. Each test owns a disposable schema of wortly_test, as
-the core's own tests do. The real access_approved builder prepares the facts, the real
-TelegramChannel sends them through PTB over a fake transport.
+it the whole module is skipped. Each test owns a disposable schema of wortly_test on the
+core's password-protected stand (pg_stand), as the core's own tests do. The real
+access_approved builder prepares the facts, the real TelegramChannel sends them through
+PTB over a fake transport.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import httpx  # noqa: E402
 from psycopg import sql  # noqa: E402
 
 from conftest import TELEGRAM_SETTINGS  # noqa: E402
+import pg_stand  # noqa: E402
 from fakes.telegram_api import WEB_APP_URL  # noqa: E402
 from wortly.jobs.kinds import discover as discover_kinds  # noqa: E402
 from wortly.jobs.loop import DeliveryLoop, DeliveryLoopConfig, UnservedReport  # noqa: E402
@@ -41,18 +43,18 @@ from wortly_telegram.messages.registry import discover as discover_templates  # 
 NOW = datetime(2026, 9, 29, 12, tzinfo=timezone.utc)
 # Synthetic test values, not the deployment policy (G08/Q3).
 D = timedelta(minutes=10)
-PARAMETERS = dict(dbname="wortly_test", host="/Users/wf/py/wortly/db/run", port=55432, user="wf")
 
 
 @pytest.fixture
 def database():
+    parameters = pg_stand.connect_params()
     schema = f"wortly_telegram_test_{uuid4().hex}"
-    with psycopg.connect(**PARAMETERS, autocommit=True) as admin:
+    with psycopg.connect(**parameters, autocommit=True) as admin:
         admin.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
         try:
             @contextmanager
             def connections():
-                with psycopg.connect(**PARAMETERS, autocommit=True) as connection:
+                with psycopg.connect(**parameters, autocommit=True) as connection:
                     connection.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schema)))
                     yield connection
             with connections() as connection:

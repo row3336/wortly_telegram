@@ -2,9 +2,10 @@
 
 Unit tests run on FakeCore behind httpx.MockTransport. The integration tests at the end
 call the core's real internal application (wortly.api.internal.create_internal_app)
-through httpx.ASGITransport on PostgreSQL wortly_test; they need fastapi and psycopg,
-so they run in the core's interpreter only (WORK_QUEUE §1, two interpreters). No test
-opens a socket: every IP connect and name lookup fails (forbid_network).
+through httpx.ASGITransport on PostgreSQL wortly_test of the core's password-protected
+stand (pg_stand); they need fastapi and psycopg, so they run in the core's interpreter
+only (WORK_QUEUE §1, two interpreters). No test opens a socket: every IP connect and
+name lookup fails (forbid_network).
 """
 
 from __future__ import annotations
@@ -255,7 +256,9 @@ def real_core(secret_file):
     from wortly.jobs.leases import LeaseStore
     from wortly.storage import apply_migrations
 
-    parameters = dict(dbname="wortly_test", host="/Users/wf/py/wortly/db/run", port=55432, user="wf")
+    import pg_stand
+
+    parameters = pg_stand.connect_params()
     schema = f"wortly_telegram_test_{uuid4().hex}"
     with psycopg.connect(**parameters, autocommit=True) as admin:
         admin.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
