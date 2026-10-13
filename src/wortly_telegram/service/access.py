@@ -13,7 +13,7 @@ button of the access_reminder digest and the list below; callback_data is
   "not allowed". No answer of the core: "try again later" (§5.3 п.2).
 - "Reject with a reason" asks for the reason; the owner's next plain text in this chat is
   the reason (router.TextInput). The input lives in this process's memory, one per
-  owner chat, and is lost on a restart: the owner presses the button again. Until Q55: a
+  owner chat, and is lost on a restart: the owner presses the button again. Q55 (approved by R12-14): a
   command or a button cancels it, a text over REASON_MAX_CHARACTERS code points is not
   taken and the bot asks for a shorter one, and the input has no time limit. A reason the
   core still refuses (422 VALIDATION_FAILED) keeps the input and asks for another wording.
@@ -66,7 +66,7 @@ ALREADY_HANDLED: dict[Language, str] = {"ru": "ℹ️ Уже обработан�
 # bot/i18n.py "access_no_pending"); final wording waits for the owner (T-TEXTS-PAGE).
 NO_PENDING: dict[Language, str] = {"ru": "Нет заявок в ожидании.", "uk": "Немає заявок в очікуванні.",
                                    "en": "No pending requests."}
-# WORKING TEXT (not set by the specification): the reason prompt (answer 2.6 б, г; Q55), new (the old bot had none);
+# WORKING TEXT (not set by the specification): the reason prompt (answer 2.6 б, г; Q55 approved by R12-14), new (the old bot had none);
 # final wording waits for the owner (T-TEXTS-PAGE).
 REASON_PROMPT: dict[Language, str] = {
     "ru": "✍️ Напишите причину отказа одним сообщением (до 500 символов). Команда или кнопка отменяет ввод.",
@@ -74,7 +74,7 @@ REASON_PROMPT: dict[Language, str] = {
     "en": "✍️ Type the reason for the rejection in one message (up to 500 characters). "
           "A command or a button cancels it.",
 }
-# WORKING TEXT (not set by the specification): the refusal of a reason over 500 characters (answer 2.6 г; Q55), new (the old bot had none);
+# WORKING TEXT (not set by the specification): the refusal of a reason over 500 characters (answer 2.6 г; Q55 approved by R12-14), new (the old bot had none);
 # final wording waits for the owner (T-TEXTS-PAGE).
 REASON_TOO_LONG: dict[Language, str] = {
     "ru": "Причина длиннее 500 символов ({count}). Напишите короче.",

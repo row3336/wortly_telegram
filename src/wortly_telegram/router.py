@@ -49,7 +49,7 @@ chat with ``text_input`` (the owner's reason for a rejection). The router hands 
 text, not a command, to the first function whose input waits for that chat and whose
 audience still admits the sender; otherwise the default answer follows. Every command
 and every button press of a private chat first cancels each waiting input (handler group
--2), before any handler runs: until the owner answers Q55 a command or a button ends the
+-2), before any handler runs: (Q55, approved by R12-14) a command or a button ends the
 input. A function's own button then starts a new one in its handler.
 
 Default handler — rule ВП-27, made the owner's decision by answer 2.7 (06.10.2026; Q23): any other text,
