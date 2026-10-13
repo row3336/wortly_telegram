@@ -23,6 +23,7 @@ import pytest
 from wortly.operations.log_privacy import token_forms
 
 from conftest import TELEGRAM_SETTINGS, feed
+from fakes import database_config
 from fakes.jobs import envelope, snapshot
 from fakes.telegram_api import TOKEN, callback_update, message_update, user
 from wortly_telegram import logs
@@ -178,8 +179,7 @@ def test_the_process_entries_run_inside_private_logs(tmp_path, monkeypatch, capt
     telegram_table = (f'[telegram]\nbot_token_file = "{token_file}"\nweb_app_url = "https://app.example.test/"\n'
                       "connect_timeout_seconds = 1\nread_timeout_seconds = 1\nwrite_timeout_seconds = 1\n"
                       "pool_timeout_seconds = 1\n")
-    database = ('[database]\nconninfo = "host=/tmp port=5432 dbname=wortly_test user=wortly sslmode=disable"\n'
-                "connect_timeout_seconds = 5\npool_min_size = 0\npool_max_size = 1\npool_timeout_seconds = 5\n")
+    database = database_config.database_table(database_config.make_passfile(tmp_path))
     service_secret = "0123456789abcdef" * 4
     secret_file = tmp_path / "service_secret"
     secret_file.write_text(service_secret + "\n")

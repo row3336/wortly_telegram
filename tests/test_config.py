@@ -16,6 +16,7 @@ import textwrap
 
 import pytest
 
+from fakes import database_config
 from fakes.core_gateway import CORE_SECRET, core_settings
 from test_import_without_psycopg import probe_environment
 from wortly_telegram.config import (
@@ -193,6 +194,12 @@ pool_timeout_seconds = 5
 """
 
 
+@pytest.fixture
+def database_table(tmp_path: Path) -> str:
+    """The [database] table of a delivery configuration: the core requires a passfile in conninfo (D1)."""
+    return database_config.database_table(database_config.make_passfile(tmp_path))
+
+
 def telegram_table(token_file: Path) -> str:
     return textwrap.dedent(f"""
         [telegram]
@@ -259,11 +266,11 @@ def bot_text(token_file, secret_file) -> str:
     return BOT + core_table(secret_file) + telegram_table(token_file)
 
 
-def test_delivery_settings_load_every_key(tmp_path, token_file):
+def test_delivery_settings_load_every_key(tmp_path, token_file, database_table):
     pytest.importorskip("psycopg")
     from wortly_telegram.config import load_delivery_settings
     path = tmp_path / "delivery.toml"
-    path.write_text(DATABASE + DELIVERY + telegram_table(token_file))
+    path.write_text(database_table + DELIVERY + telegram_table(token_file))
     settings = load_delivery_settings(path)
     assert settings.loop.owner == "delivery-1"
     assert settings.loop.lease_duration == timedelta(seconds=30)
@@ -274,11 +281,11 @@ def test_delivery_settings_load_every_key(tmp_path, token_file):
 
 
 @pytest.mark.parametrize("drop", ["messages_per_second", "job_lease_seconds", "web_app_url", "instance"])
-def test_delivery_settings_without_a_key_stop_the_start(tmp_path, token_file, drop):
+def test_delivery_settings_without_a_key_stop_the_start(tmp_path, token_file, database_table, drop):
     pytest.importorskip("psycopg")
     from wortly.operations.config import ConfigurationError
     from wortly_telegram.config import load_delivery_settings
-    text = DATABASE + DELIVERY + telegram_table(token_file)
+    text = database_table + DELIVERY + telegram_table(token_file)
     text = "\n".join(line for line in text.splitlines() if not line.startswith(drop))
     path = tmp_path / "delivery.toml"
     path.write_text(text)
@@ -472,12 +479,12 @@ def test_an_unknown_key_anywhere_stops_the_bot(tmp_path, bot_text, table):
 
 
 @pytest.mark.parametrize("table", [None, *DELIVERY_TABLES])
-def test_an_unknown_key_anywhere_stops_the_delivery(tmp_path, token_file, table):
+def test_an_unknown_key_anywhere_stops_the_delivery(tmp_path, token_file, database_table, table):
     pytest.importorskip("psycopg")
     from wortly.operations.config import ConfigurationError
     from wortly_telegram.config import load_delivery_settings
     path = tmp_path / "delivery.toml"
-    path.write_text(with_unknown_key(DATABASE + DELIVERY + telegram_table(token_file), table))
+    path.write_text(with_unknown_key(database_table + DELIVERY + telegram_table(token_file), table))
     with pytest.raises(ConfigurationError, match="unknown_key"):
         load_delivery_settings(path)
 
@@ -493,13 +500,13 @@ KEY_ERROR = key_error("telegram.bot_token_file")
 
 
 @pytest.mark.parametrize("mode", [0o644, 0o640, 0o604, 0o666])
-def test_a_token_file_open_to_others_stops_the_delivery_with_the_key_only(tmp_path, token_file, mode):
+def test_a_token_file_open_to_others_stops_the_delivery_with_the_key_only(tmp_path, token_file, database_table, mode):
     pytest.importorskip("psycopg")
     from wortly.operations.config import ConfigurationError
     from wortly_telegram.config import load_delivery_settings
     token_file.chmod(mode)
     path = tmp_path / "delivery.toml"
-    path.write_text(DATABASE + DELIVERY + telegram_table(token_file))
+    path.write_text(database_table + DELIVERY + telegram_table(token_file))
     with pytest.raises(ConfigurationError) as raised:
         load_delivery_settings(path)
     message = str(raised.value)
@@ -544,12 +551,12 @@ def test_a_secret_file_closed_to_others_is_read(tmp_path, bot_text, secret_file,
     assert load_bot_settings(path).core.service_secret == SERVICE_SECRET
 
 
-def test_the_delivery_entry_exits_with_code_two_on_a_token_file_open_to_others(tmp_path, token_file, capsys):
+def test_the_delivery_entry_exits_with_code_two_on_a_token_file_open_to_others(tmp_path, token_file, database_table, capsys):
     pytest.importorskip("psycopg")
     from wortly_telegram.delivery.main import main
     token_file.chmod(0o644)
     path = tmp_path / "role.toml"
-    path.write_text(DATABASE + DELIVERY + telegram_table(token_file))
+    path.write_text(database_table + DELIVERY + telegram_table(token_file))
     assert main(["--config", str(path)]) == 2
     captured = capsys.readouterr()
     assert captured.err == f"wortly delivery: configuration error: {KEY_ERROR}\n"
