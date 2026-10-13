@@ -38,8 +38,13 @@ def test_every_core_job_kind_has_a_template_in_every_language():
                 assert message.text.strip()
 
 
+# Kinds whose template is ready before the core's builder exists. Remove a name when DEV-15 adds its builder.
+AWAITING_CORE_BUILDER = frozenset({"weekly_report", "daily_report"})
+
+
 def test_the_registry_has_no_template_for_a_kind_the_core_does_not_know():
-    assert discover().kinds <= discover_kinds().names
+    assert discover().kinds - AWAITING_CORE_BUILDER <= discover_kinds().names
+    assert AWAITING_CORE_BUILDER <= discover().kinds
 
 
 def test_access_approved_is_the_notice_with_the_app_button():
@@ -75,7 +80,7 @@ def test_faulty_facts_fail_before_any_network_call(facts):
 
 def test_an_unknown_kind_has_no_template():
     with pytest.raises(RenderError):
-        discover().prepare("weekly_report", envelope(kind="weekly_report"))
+        discover().prepare("no_such_kind", envelope(kind="no_such_kind"))
 
 
 def test_a_template_fault_becomes_a_render_error_without_its_text():

@@ -64,6 +64,11 @@ class OutgoingMessage:
     only: it grants nothing, the Mini App still signs in with its own initData.
     ``app_label`` names the Mini App button when a kind has its own approved label (the
     Learning reminder, S04); the button opens the same address, without it the start label.
+    ``silent`` sends the message without a notification sound (Bot API disable_notification);
+    only the kind that asks for it is quiet, every other message is sent as before.
+    ``parse_mode`` is the narrow exception to "no parse_mode" (TZC:470): only the ``#daily``
+    report asks for it, to send its text as a monospace Markdown block. The text then
+    already carries the escapes MarkdownV2 needs; every other message has ``None``.
     """
 
     text: str = field(repr=False)
@@ -71,12 +76,18 @@ class OutgoingMessage:
     buttons: tuple[tuple[CallbackButton, ...], ...] = ()
     app_card: str | None = field(default=None, repr=False)
     app_label: str | None = None
+    silent: bool = False
+    parse_mode: Literal["MarkdownV2"] | None = None
 
     def __post_init__(self) -> None:
         if type(self.text) is not str or not self.text.strip():
             raise RenderError("A message needs a non-empty text")
         if type(self.app_button) is not bool:
             raise RenderError("app_button must be a boolean")
+        if type(self.silent) is not bool:
+            raise RenderError("silent must be a boolean")
+        if self.parse_mode is not None and self.parse_mode != "MarkdownV2":
+            raise RenderError("parse_mode is MarkdownV2 or absent")
         if not isinstance(self.buttons, tuple) or not all(
                 isinstance(row, tuple) and row and all(isinstance(button, CallbackButton) for button in row)
                 for row in self.buttons):

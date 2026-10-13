@@ -63,9 +63,13 @@ class TelegramChannel:
         except Exception as error:  # noqa: BLE001 - every fault here precedes the network
             logger.warning("delivery not formatted: %s", type(error).__name__)
             return PRE_SEND_ERROR
+        # Only a quiet message names the option; every other call stays as it was.
+        options: dict[str, Any] = {"disable_notification": True} if prepared.message.silent else {}
+        if prepared.message.parse_mode is not None:  # the #daily block only (TZC:470)
+            options["parse_mode"] = prepared.message.parse_mode
         try:
             self._run(self._bot.send_message(chat_id=prepared.chat_id, text=prepared.message.text,
-                                             reply_markup=markup))
+                                             reply_markup=markup, **options))
         except Exception as error:  # noqa: BLE001 - classified, never raised to the loop
             result = classify(error)
             if result.reason == "rate_limited":

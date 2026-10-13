@@ -140,7 +140,7 @@ def test_a_fault_before_the_network_is_pre_send_error_with_no_request(telegram, 
 
 
 def test_an_unknown_kind_is_pre_send_error_with_no_request(telegram, make_channel):
-    result = make_channel().deliver(snapshot(kind="weekly_report", facts=envelope(kind="weekly_report")))
+    result = make_channel().deliver(snapshot(kind="no_such_kind", facts=envelope(kind="no_such_kind")))
     assert result.reason == "pre_send_error"
     assert telegram.calls_to("sendMessage") == []
 
