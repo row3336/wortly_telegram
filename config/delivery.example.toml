@@ -1,0 +1,62 @@
+# Sample configuration of the delivery role: python -m wortly_telegram.delivery.main --config <file>.
+# Every key is required and an unknown key stops the start (exit code 2). All values below are
+# fictitious placeholders, not the deployment policy. The numbers are conditional demonstration
+# values (G08): no accepted SLA or parameters stand behind them, they only make the file load.
+# The addresses cannot name a real database or a real Telegram bot.
+# Copy it outside the repository and edit the copy. Never put a real token or password here.
+# Unlike the bot, the delivery role opens the database, so it has a [database] table (the same
+# shape as the api's) and no [core] table. There is no [access] table either.
+# Secrets never go into this file: telegram.bot_token_file names a file with mode 0600, owned by
+# the user running the process, holding the token on one line.
+
+[database]
+# libpq connection string. host, port, dbname, user and sslmode are required.
+# Not allowed: password, sslpassword, service, connect_timeout, other secret or debug
+# parameters, and target_session_attrs other than read-write (the code adds that itself).
+# A database password is required, for test databases too (owner answer R01). It goes only into
+# a libpq password file: passfile=/absolute/path in this string (owned by the user running the
+# process, mode 0600). Never write the password into the string or into this file.
+# An empty passfile= is an error. The passfile path below is a placeholder: the loader stops
+# the start until it names a real file, which the operator creates outside Git.
+# host (a Unix-socket directory here) and sslmode=disable are replaceable placeholders only:
+# the transport and the sslmode of the contour are not chosen here (DEV-21/22).
+conninfo = "host=/path/to/postgres/socket port=5432 dbname=wortly_example user=wortly_delivery_example sslmode=disable passfile=/path/to/wortly/pgpass"
+# Seconds to wait for a new connection (at most 2147483647).
+connect_timeout_seconds = 5
+# Connection pool size: pool_min_size >= 0, pool_max_size >= 1 and >= pool_min_size.
+pool_min_size = 1
+pool_max_size = 4
+# Seconds a call waits for a free pooled connection (at most 9223372036).
+pool_timeout_seconds = 10
+
+[delivery]
+# Name of this delivery instance in the job leases; unique per running process.
+instance = "delivery-example-1"
+# How long a claimed job is leased. It must exceed one send slot (1 / messages_per_second
+# seconds) plus the sum of the four [telegram] timeouts below (here 5 + 10 + 10 + 5 = 30);
+# otherwise the start stops.
+job_lease_seconds = 60
+# How often expired job leases are recovered.
+recovery_period_seconds = 60
+# Wait between polls of the job queue.
+poll_interval_seconds = 2
+# How many failed preflights (checks before a send) a job may have (integer >= 1).
+max_failed_preflights = 3
+# Wait before a retry after a proven nondelivery without a Retry-After from Telegram.
+nondelivery_delay_seconds = 300
+# lock_timeout of each database connection, milliseconds (at most 2147483647).
+lock_timeout_milliseconds = 5000
+# Send rate gate, messages per second (1..1000000). The number is the owner's choice.
+messages_per_second = 10
+
+[telegram]
+# Absolute path of the file with the bot token on a single line (mode 0600, owned by the user
+# running the process). The token itself never goes into this file.
+bot_token_file = "/path/to/wortly/bot_token"
+# https address of the Mini App, opened by the bot's button.
+web_app_url = "https://app.example.test/"
+# Timeouts of one Bot API request, seconds (>= 1). Their sum feeds the job_lease_seconds rule.
+connect_timeout_seconds = 5
+read_timeout_seconds = 10
+write_timeout_seconds = 10
+pool_timeout_seconds = 5
