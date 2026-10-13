@@ -65,7 +65,7 @@ class TelegramChannel:
             return PRE_SEND_ERROR
         # Only a quiet message names the option; every other call stays as it was.
         options: dict[str, Any] = {"disable_notification": True} if prepared.message.silent else {}
-        if prepared.message.parse_mode is not None:  # the #daily block only (TZC:470)
+        if prepared.message.parse_mode is not None:  # among the jobs the #daily block only (R9-04)
             options["parse_mode"] = prepared.message.parse_mode
         try:
             self._run(self._bot.send_message(chat_id=prepared.chat_id, text=prepared.message.text,

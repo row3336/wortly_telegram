@@ -18,10 +18,10 @@ A day without a first touch is no message (CON:315): the template fails closed, 
 facts that contradict each other.
 
 The text is a monospace Markdown block, sent with ``parse_mode="MarkdownV2"`` as the old bot
-sent it with ``Markdown`` (an engineering reading of TZC:470, the only exception to ВП-16 apart
-from the common-field echo; where the exception lives is the owner's open root decision).
-MarkdownV2 is chosen because inside a ``pre`` block it needs only "`" and "\\" escaped, which
-legacy Markdown cannot do at all. Every placed value is escaped, so no fact can end the block.
+sent it with ``Markdown``: the owner's narrow exception to ВП-16 (R9-04, К19-049; the other one
+is the common-field echo of the service bot, R9-05). MarkdownV2 is chosen because inside a
+``pre`` block it needs only "`" and "\\" escaped, which legacy Markdown cannot do at all.
+Every placed value is escaped (messages._markdown_v2), so no fact can end the block.
 The message is ordinary (not quiet), has no button, no name, no chat and no pair.
 """
 
@@ -33,6 +33,7 @@ import re
 from typing import Any
 
 from . import Language, OutgoingMessage, RenderError, Template
+from ._markdown_v2 import escape_pre
 
 
 KIND = "daily_report"
@@ -75,11 +76,6 @@ DAILY_TEXTS: dict[Language, dict[str, str]] = {
 }
 
 HASHTAG = "#daily"
-
-
-def escape_pre(text: str) -> str:
-    """Escape ``text`` for a MarkdownV2 ``pre`` block: only "\\" and "`" (Bot API, MarkdownV2 style)."""
-    return text.replace("\\", "\\\\").replace("`", "\\`")
 
 
 def _count(value: object) -> int:

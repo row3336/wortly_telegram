@@ -1,9 +1,9 @@
-"""Replies of the bot in a chat: temporary rule ВП-28 until the owner answers Q32 (fork Р4).
+"""Replies of the bot in a chat: rule ВП-28, made the owner's decision by answer 2.8 (06.10.2026; Q32, fork Р4).
 
 A reply answers a user's own action; it is not a delivery job, so TC:282 does not
-govern it (design T-D §3.5 п.6). Until Q32 is answered the bot repeats as the old bot
-did (OLD bot/common/navigation.py:108-151; "may have arrived → stay silent" is the
-owner's decision of 2026-07-11):
+govern it (design T-D §3.5 п.6). The bot repeats as the old bot did
+(OLD bot/common/navigation.py:108-151; "may have arrived → stay silent" is the owner's
+decision of 2026-07-11):
 
 - RetryAfter: wait retry_after + 1 s and send again;
 - a request that never left (httpx connect error, connect timeout, pool timeout):
@@ -16,7 +16,7 @@ owner's decision of 2026-07-11):
   a log line with the exception class only.
 
 Other errors (Forbidden, InvalidToken, ChatMigrated, Conflict) go up at once, as in
-the old bot. This module is the only place that changes after Q32.
+the old bot. This module is the only place where that rule lives.
 """
 
 from __future__ import annotations

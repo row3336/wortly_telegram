@@ -13,6 +13,7 @@ MARK = "# WORKING TEXT (not set by the specification)"
 # Every module that holds a text for the user, and the constant that holds it.
 WORKING_TEXTS = (
     ("start.py", "TEXTS"),
+    ("echo.py", "ECHO_TEXTS"),
     ("webapp.py", "BUTTON_LABELS"),
     ("messages/access_approved.py", "TEXTS"),
     ("messages/access_request.py", "REQUESTS_ACCESS"),

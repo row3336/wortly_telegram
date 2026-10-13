@@ -66,9 +66,11 @@ class OutgoingMessage:
     Learning reminder, S04); the button opens the same address, without it the start label.
     ``silent`` sends the message without a notification sound (Bot API disable_notification);
     only the kind that asks for it is quiet, every other message is sent as before.
-    ``parse_mode`` is the narrow exception to "no parse_mode" (TZC:470): only the ``#daily``
-    report asks for it, to send its text as a monospace Markdown block. The text then
-    already carries the escapes MarkdownV2 needs; every other message has ``None``.
+    ``parse_mode`` is one of the owner's two narrow exceptions to "no parse_mode" (R9-04,
+    R9-05; К19-049): among the jobs only the ``#daily`` report asks for it, to send its text
+    as a monospace Markdown block; among the replies only the copyable echo of a common field
+    (wortly_telegram.echo). The text then already carries the escapes MarkdownV2 needs
+    (messages._markdown_v2); every other message has ``None``.
     """
 
     text: str = field(repr=False)

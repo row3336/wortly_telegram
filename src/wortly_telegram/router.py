@@ -52,10 +52,10 @@ and every button press of a private chat first cancels each waiting input (handl
 -2), before any handler runs: until the owner answers Q55 a command or a button ends the
 input. A function's own button then starts a new one in its handler.
 
-Default handler — temporary rule ВП-27 until the owner answers Q23: any other text,
+Default handler — rule ВП-27, made the owner's decision by answer 2.7 (06.10.2026; Q23): any other text,
 an old command (/undo) or an unknown button gets the /start answer, a short text with
 the Mini App button (the old bot's handler of orphaned text, R-TG 1.03, led to /start
-too). After Q23 only ``answer_anything_else`` in this module changes.
+too). Only ``answer_anything_else`` in this module holds that rule.
 """
 
 from __future__ import annotations
@@ -233,7 +233,7 @@ async def _admits(function: ServiceFunction, update: Update, context: BotContext
 
 
 async def answer_anything_else(update: Update, context: BotContext) -> None:
-    """ВП-27 (temporary, until Q23): the /start answer, a short text with the Mini App button."""
+    """ВП-27 (answer 2.7): the /start answer, a short text with the Mini App button."""
     if update.callback_query is not None:
         # Ends the button's loading state; an old button carries no action here.
         await send_reply(update.callback_query.answer, sleep=context.sleep)

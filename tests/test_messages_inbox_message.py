@@ -168,8 +168,10 @@ def test_an_old_body_without_the_sender_is_delivered_with_the_number(language, c
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_the_sender_values_are_output_as_they_are_without_markup_or_cutting(language):
-    sender = {"first_name": "<b>A</b> *x* _y_ [z](u) " + "ы" * 300, "username": "a_b" + "c" * 100}
+def test_the_sender_values_within_their_bounds_are_output_as_they_are_without_markup(language):
+    # 128 and 32 UTF-16 units are the bounds of R7-01; the cut beyond them: test_messages_inbox_bounds.
+    sender = {"first_name": "<b>A</b> *x* _y_ [z](u) " + "ы" * 104, "username": "a_b" + "c" * 29}
+    assert len(sender["first_name"]) == 128 and len(sender["username"]) == 32
     text = TEMPLATE.render(body(sender=sender), language).text
     assert text.splitlines()[1] == f"{SENDER_LABELS[language]} {sender['first_name']} (@{sender['username']})"
 

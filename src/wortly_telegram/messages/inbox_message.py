@@ -8,7 +8,16 @@ The owner also sees who wrote (answer Q20, 4.5а-Н2): the sender's first name a
 username when the core has them, and the full number of the inbox record. The surname is
 not stored and not shown. The core's ``sender`` fact is optional: a job enqueued before it
 existed, or a sender without a stored name, is delivered with the number and no sender
-line. The template cuts and shortens none of these values; their length is not decided.
+line.
+
+Length (R7-01, К19-042): the user's text is at most 3700 UTF-16 code units, checked by the
+Mini App and the core before it is sent; the template never cuts or splits it. Only the
+service part is bounded here, and only a value over its bound changes: the lemma of a
+complaint's heading keeps 40 units and gets "…", the first name keeps 128 units, the
+username 32. A cut never splits a surrogate pair, so a kept part may be one unit shorter.
+With these bounds the longest complaint stays within Telegram's 4096 (the owner's
+calculation: a service part of 297 units, a margin of 99); the real bound and its unit are
+checked on a test bot before the number is final (R7-01, separate network permission).
 
 The user's text, the first name and the username are untrusted. The channel sends plain
 text without parse_mode (ВП-16), so they are placed as they are: nothing escapes them and
@@ -19,7 +28,6 @@ message names the card id, the channel builds the web_app button (webapp.card_ke
 A message without a card has no button.
 The text is not cut or split: the channel makes one sendMessage call, and a message over
 Telegram's 4096 characters is refused there (BadRequest, a known failure of the attempt).
-The upper bound of a user's text is an open question to the owner (2.19а).
 """
 
 from __future__ import annotations
@@ -39,6 +47,14 @@ _FIELDS = frozenset({"inbox_id", "category", "text", "card"})
 _OPTIONAL_FIELDS = frozenset({"sender"})
 _CARD_FIELDS = frozenset({"card_id", "lemma"})
 _SENDER_FIELDS = frozenset({"first_name", "username"})
+
+# Bounds of the service part in UTF-16 code units (R7-01, К19-042), applied only when exceeded.
+LEMMA_MAX_UTF16 = 40
+NAME_MAX_UTF16 = 128
+USERNAME_MAX_UTF16 = 32
+LEMMA_CUT_MARK = "…"
+# The bound of the user's text, enforced by the Mini App and the core (not here; R7-01).
+TEXT_MAX_UTF16 = 3700
 
 # Wording approved by the owner (R10, 08.10.2026); display conditions follow TA.
 # The headings of the two kinds; the complaint heading has the card's lemma in {lemma}.
@@ -72,6 +88,25 @@ NUMBER_LABELS: dict[Language, str] = {
 }
 
 
+def utf16_units(value: str) -> int:
+    """The length Telegram counts: UTF-16 code units (a character above U+FFFF counts two)."""
+    return len(value.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def bounded(value: str, limit: int, mark: str = "") -> str:
+    """``value`` unchanged within ``limit`` UTF-16 units; else its longest head within it plus ``mark``."""
+    if utf16_units(value) <= limit:
+        return value
+    kept, units = [], 0
+    for char in value:
+        width = 2 if ord(char) > 0xFFFF else 1
+        if units + width > limit:
+            break
+        kept.append(char)
+        units += width
+    return "".join(kept) + mark
+
+
 def _text(value: Any, name: str) -> str:
     if type(value) is not str or not value.strip():
         raise RenderError(f"The inbox_message {name} must be a non-empty string")
@@ -85,8 +120,8 @@ def _sender_line(sender: Any, language: Language) -> str | None:
     if not all(type(value) is str for value in sender.values()):
         raise RenderError("The inbox_message sender facts must be strings")
     # A blank value names nobody; a message must not be lost over a name it cannot show.
-    name = sender.get("first_name", "")
-    username = sender.get("username", "")
+    name = bounded(sender.get("first_name", ""), NAME_MAX_UTF16)
+    username = bounded(sender.get("username", ""), USERNAME_MAX_UTF16)
     handle = f"@{username}" if username.strip() else ""
     if name.strip():
         shown = f"{name} ({handle})" if handle else name
@@ -105,7 +140,8 @@ def render(body: Mapping[str, Any], language: Language) -> OutgoingMessage:
         if not isinstance(card, Mapping) or set(card) != _CARD_FIELDS:
             raise RenderError("A complaint names the card")
         card_id = _text(card["card_id"], "card_id")
-        heading = HEADINGS[COMPLAINT][language].format(lemma=_text(card["lemma"], "lemma"))
+        lemma = bounded(_text(card["lemma"], "lemma"), LEMMA_MAX_UTF16, LEMMA_CUT_MARK)
+        heading = HEADINGS[COMPLAINT][language].format(lemma=lemma)
     elif category == FEEDBACK:
         if card is not None:
             raise RenderError("A message without a complaint names no card")
