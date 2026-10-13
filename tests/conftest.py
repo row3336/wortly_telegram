@@ -13,6 +13,7 @@ import threading
 
 import pytest
 
+from fakes import trail as trail_fakes
 from fakes.core_gateway import FakeCoreGateway
 from fakes.telegram_api import TOKEN, WEB_APP_URL, FakeTelegram
 from wortly_telegram.config import TelegramSettings
@@ -21,6 +22,14 @@ from wortly_telegram.config import TelegramSettings
 TELEGRAM_SETTINGS = TelegramSettings(bot_token=TOKEN, web_app_url=WEB_APP_URL,
                                      connect_timeout=timedelta(seconds=1), read_timeout=timedelta(seconds=1),
                                      write_timeout=timedelta(seconds=1), pool_timeout=timedelta(seconds=1))
+
+
+@pytest.fixture
+def trail_lines() -> Iterator[trail_fakes.TrailLines]:
+    """The lines of the user-path trail written during the test (R3-03)."""
+    handler = trail_fakes.attach()
+    yield handler
+    trail_fakes.detach(handler)
 
 
 @pytest.fixture

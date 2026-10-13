@@ -16,25 +16,53 @@ retry policy decides whether and when another attempt follows (TC:282).
 The coroutine runs on the event loop that owns the telegram.Bot; ``run`` hands it over
 from the delivery thread and waits for the result (delivery.main, ВП-13). Logs name
 the outcome and the exception class only, never the text, the chat or Telegram's answer.
+
+Trail (R3-03, events TZ §4.3): every attempt that reaches the channel writes one ``d.job.done``
+line with the job, the attempt (its ID and number), the kind, the outcome, the failure class
+and the milliseconds spent here. The outcome is ``sent``; ``unknown``; ``retry`` for a proven
+nondelivery the core's retry policy will try again; ``failed`` (a warning) for one it closes
+(core retry_policy.RETRY_RULES, the same table ``resolve`` uses). A kept-back one-off job of a
+confirmed block counts as ``retry``: ``resolve`` fails it only when its 24 hours are over, which the
+channel does not know. The line is written when the channel answers, before ``resolve`` commits.
+It names no recipient: a snapshot reaches this channel only after the kind's builder found the
+recipient active (every builder of the core closes the job otherwise, builders/_recipient.py),
+so the ``job`` of a line never belongs to a profile that is not admitted (root decision P3-4).
+Never the chat, the text, the facts, ``logical_key`` or the snapshot.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Coroutine
 import logging
+import time
 from typing import Any, Protocol
 
 from telegram import Bot
 
 from wortly.jobs.channel import SENT, ChannelResult
 from wortly.jobs.models import DeliverySnapshot
+from wortly.jobs.retry_policy import KIND_CLASSES, RETRY_RULES
 
 from ..messages.registry import TemplateRegistry
+from ..trail import DELIVERY, emit
 from ..webapp import keyboard
 from .classify import PRE_SEND_ERROR, classify
 
 
 logger = logging.getLogger(__name__)
+
+
+def attempt_outcome(kind: str, result: ChannelResult) -> str:
+    """The trail's outcome of an attempt: sent, unknown, retry or failed (see the module text)."""
+    if result.outcome == "sent":
+        return "sent"
+    if result.outcome == "unknown":
+        return "unknown"
+    klass = KIND_CLASSES.get(kind)
+    if result.reason is None or klass is None:
+        # A legacy class-less result is repeated at once; a kind without a rule never reaches here.
+        return "retry"
+    return "failed" if RETRY_RULES[klass][result.reason] == "close" else "retry"
 
 
 class PausableCapacity(Protocol):
@@ -57,6 +85,20 @@ class TelegramChannel:
         return self._token_rejected
 
     def deliver(self, snapshot: DeliverySnapshot) -> ChannelResult:
+        started = time.monotonic()
+        result = self._deliver(snapshot)
+        try:
+            kind = snapshot.context.kind
+            outcome = attempt_outcome(kind, result)
+            emit("d.job.done", component=DELIVERY, job=snapshot.claim.job_id, att=snapshot.attempt_id,
+                 kind=kind, outcome=outcome, reason=result.reason, attempt=snapshot.attempt,
+                 ms=max(0, round((time.monotonic() - started) * 1000)),
+                 lvl="warning" if outcome == "failed" else None)
+        except Exception:  # noqa: BLE001 - an exception here would turn a known result into "unknown"
+            pass
+        return result
+
+    def _deliver(self, snapshot: DeliverySnapshot) -> ChannelResult:
         try:
             prepared = self._templates.prepare(snapshot.context.kind, snapshot.facts.facts_json)
             markup = keyboard(prepared.message, self._web_app_url, prepared.language)

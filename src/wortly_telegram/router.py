@@ -52,6 +52,16 @@ and every button press of a private chat first cancels each waiting input (handl
 -2), before any handler runs: (Q55, approved by R12-14) a command or a button ends the
 input. A function's own button then starts a new one in its handler.
 
+Trail (R3-03, events TZ §4.4): every update that reaches a handler of group 0 writes one
+``b.update`` line once handled: its trace, ``kind`` (message or callback), ``fn`` (the name of the
+service function, or "default" for the answer of rule ВП-27), the outcome (handled, denied when
+the audience did not admit the sender, ignored for a chat that is not private; failed, with the
+exception class, when the handler raised) and the milliseconds. The trace is made by the
+first handler of every update (group -2) and carried by every call of the core made while the
+update is handled (trail.py). The line never holds the chat, the sender, the text, the button's
+data or ``command_id`` below: that ID is derived from the chat and the message, so it would lead
+back to a person without a database and is written nowhere.
+
 Default handler — rule ВП-27, made the owner's decision by answer 2.7 (06.10.2026; Q23): any other text,
 an old command (/undo) or an unknown button gets the /start answer, a short text with
 the Mini App button (the old bot's handler of orphaned text, R-TG 1.03, led to /start
@@ -80,6 +90,7 @@ from telegram.ext import (
 from .gateway import CoreUnavailable, principal_of
 from .reply import send_reply
 from .start import send_start
+from .trail import BOT, allow_functions, begin_update, emit, end_update, update_trace
 
 
 logger = logging.getLogger(__name__)
@@ -258,6 +269,8 @@ async def _contact_once(context: BotContext, principal: Any, age_ms: int = 0) ->
 
 async def _retry_contact(context: BotContext, principal: Any) -> None:
     key = principal.external_id
+    # The task began inside an update and copied its context; a retry minutes later is no part of it.
+    end_update()
     try:
         pause_first = True
         for pause in CONTACT_RETRY_DELAYS:
@@ -317,10 +330,11 @@ def _command_or_button(update: Update) -> bool:
         update.message is not None and bool(filters.COMMAND.check_update(update)))
 
 
-async def take_text(update: Update, context: BotContext, functions: Sequence[ServiceFunction]) -> bool:
-    """Hand a plain text to the function whose input waits for it; False when none takes it."""
+async def _take_text(update: Update, context: BotContext,
+                     functions: Sequence[ServiceFunction]) -> ServiceFunction | None:
+    """The function that took the plain text of ``update``, or None when none did."""
     if update.message is None or filters.COMMAND.check_update(update):
-        return False
+        return None
     for function in functions:
         text_input = function.text_input
         if text_input is None or not text_input.waiting(update):
@@ -328,10 +342,39 @@ async def take_text(update: Update, context: BotContext, functions: Sequence[Ser
         if not await _admits(function, update, context):
             # The sender lost the audience since the input began: the input ends here.
             text_input.cancel(update)
-            return False
+            return None
         await text_input.handle(update, context)
-        return True
-    return False
+        return function
+    return None
+
+
+async def take_text(update: Update, context: BotContext, functions: Sequence[ServiceFunction]) -> bool:
+    """Hand a plain text to the function whose input waits for it; False when none takes it."""
+    return await _take_text(update, context, functions) is not None
+
+
+DEFAULT_FUNCTION = "default"
+
+
+class _UpdateLine:
+    """The ``b.update`` line of one handled update, written once, whatever the handler does."""
+
+    def __init__(self, update: Update, fn: str) -> None:
+        self.kind = "callback" if update.callback_query is not None else "message"
+        self.fn = fn
+        self.outcome = "handled"
+        self.err: str | None = None
+        self.started = time.monotonic()
+
+    def __enter__(self) -> _UpdateLine:
+        return self
+
+    def __exit__(self, kind, error, _traceback) -> None:
+        if error is not None:
+            self.outcome, self.err = "failed", type(error).__name__
+        emit("b.update", component=BOT, trace=update_trace() or begin_update(), kind=self.kind, fn=self.fn,
+             outcome=self.outcome, ms=max(0, round((time.monotonic() - self.started) * 1000)), err=self.err,
+             lvl="warning" if self.outcome == "failed" else None)
 
 
 def install(application: Application, context: BotContext, functions: Sequence[ServiceFunction]) -> None:
@@ -341,16 +384,21 @@ def install(application: Application, context: BotContext, functions: Sequence[S
     """
     functions = (START, *functions)
     _checked(functions)
+    # The closed list of ``fn`` in the trail: the functions of this bot, nothing a user can type.
+    allow_functions([function.name for function in functions] + [DEFAULT_FUNCTION])
     new_private_message = filters.ChatType.PRIVATE & filters.UpdateType.MESSAGE
 
     def run(function: ServiceFunction):
         async def callback(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-            if not _private(update):
-                return
-            if await _admits(function, update, context):
-                await function.handle(update, context)
-            else:
-                await answer_anything_else(update, context)
+            with _UpdateLine(update, function.name) as line:
+                if not _private(update):
+                    line.outcome = "ignored"
+                    return
+                if await _admits(function, update, context):
+                    await function.handle(update, context)
+                else:
+                    line.outcome = "denied"
+                    await answer_anything_else(update, context)
         return callback
 
     async def contact(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -364,6 +412,8 @@ def install(application: Application, context: BotContext, functions: Sequence[S
             await note_contact(update, context)
 
     async def interrupt(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+        # The first handler of every update: its trace, for the calls of the core and the trail.
+        begin_update()
         if _private(update) and _command_or_button(update):
             for function in functions:
                 if function.text_input is not None:
@@ -381,8 +431,15 @@ def install(application: Application, context: BotContext, functions: Sequence[S
             application.add_handler(CallbackQueryHandler(run(function), pattern=pattern))
 
     async def anything_else(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-        if _private(update) and not await take_text(update, context, functions):
-            await answer_anything_else(update, context)
+        with _UpdateLine(update, DEFAULT_FUNCTION) as line:
+            if not _private(update):
+                line.outcome = "ignored"
+                return
+            taker = await _take_text(update, context, functions)
+            if taker is None:
+                await answer_anything_else(update, context)
+            else:
+                line.fn = taker.name
 
     application.add_handler(MessageHandler(new_private_message & filters.TEXT, anything_else))
     application.add_handler(CallbackQueryHandler(anything_else))

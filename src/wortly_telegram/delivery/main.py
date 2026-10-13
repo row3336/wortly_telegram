@@ -175,6 +175,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from ..config import load_delivery_settings
     from ..logs import log_secrets, private_logs
     from ..messages.registry import TemplateRegistryError
+    from ..trail import DELIVERY, process_trail
 
     parser = argparse.ArgumentParser(
         prog="python -m wortly_telegram.delivery.main",
@@ -186,7 +187,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ConfigurationError as error:
         print(f"wortly delivery: configuration error: {error}", file=sys.stderr)
         return 2
-    with private_logs(log_secrets(settings.telegram.bot_token, settings.database)):
+    # The trail (R3-03) has its own INFO handler inside the same cleaning: lines never repeat in the root's.
+    with private_logs(log_secrets(settings.telegram.bot_token, settings.database)), process_trail(DELIVERY):
         try:
             return serve(settings)
         except (KindRegistryError, TemplateRegistryError, StartError) as error:

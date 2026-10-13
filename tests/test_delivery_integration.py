@@ -221,7 +221,7 @@ def test_waiting_jobs_of_an_unknown_kind_stay_untouched_while_known_ones_are_del
             loop.run_once(stop)
     assert state(database, known) == (("completed", None), [("sent", None)])
     assert state(database, waiting) == before == (("ready", None), [])
-    messages = [record.getMessage() for record in caplog.records if record.levelname == "ERROR"]
+    messages = [record.getMessage() for record in caplog.records if record.levelname == "ERROR" and record.name != "wortly.trail"]
     # At start, then again only after more than an hour; the loop's polls share the start's report.
     assert messages == ["1 job kinds this release cannot deliver are waiting: future_kind"] * 2
     assert not any("body" in message or str(waiting) in message or str(profile) in message for message in messages)

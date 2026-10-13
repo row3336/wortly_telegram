@@ -20,6 +20,11 @@ from wortly_telegram.delivery.main import (
 from wortly_telegram.messages.registry import TemplateRegistry, discover
 
 
+def written(caplog):
+    """The ordinary log records; the trail's own lines (d.unserved, R3-03) are tested in test_trail_delivery."""
+    return [record for record in caplog.records if record.name != "wortly.trail"]
+
+
 def test_the_bridge_runs_the_coroutine_on_the_bot_loop_and_returns_its_result(bot_loop):
     run = loop_runner(bot_loop)
 
@@ -107,7 +112,7 @@ def test_nothing_is_logged_without_jobs_of_unknown_kinds(caplog):
     repository = FakeRepository(waiting=frozenset(kinds))
     assert reported_unserved(kinds, repository, UnservedReport()) == frozenset()
     assert repository.asked == [kinds]
-    assert caplog.records == []
+    assert written(caplog) == []
 
 
 def test_jobs_of_unknown_kinds_are_logged_once_by_name_and_do_not_refuse_the_start(caplog):
@@ -115,7 +120,7 @@ def test_jobs_of_unknown_kinds_are_logged_once_by_name_and_do_not_refuse_the_sta
     with caplog.at_level("ERROR"):
         unserved = reported_unserved(discover_kinds().names, repository, UnservedReport())
     assert unserved == frozenset({"brand_new_kind"})
-    assert [record.getMessage() for record in caplog.records] == [
+    assert [record.getMessage() for record in written(caplog)] == [
         "1 job kinds this release cannot deliver are waiting: brand_new_kind"]
 
 
@@ -144,7 +149,7 @@ def test_serve_starts_the_delivery_with_a_job_of_an_unknown_kind(monkeypatch, ca
     assert started[0][1] is repository  # the same repository: the jobs stay untouched
     assert repository.asked == [discover_kinds().names]
     assert closed == [True]
-    assert [record.getMessage() for record in caplog.records] == [
+    assert [record.getMessage() for record in written(caplog)] == [
         "1 job kinds this release cannot deliver are waiting: brand_new_kind"]
 
 
@@ -203,8 +208,8 @@ def test_the_start_line_and_the_loop_share_one_report(caplog):
         reported_unserved(names, repository, report)
         now[0] = 30 * 60
         report.note(repository.unserved_kinds(names))  # the loop's poll
-        assert [r.getMessage() for r in caplog.records] == [
+        assert [r.getMessage() for r in written(caplog)] == [
             "2 job kinds this release cannot deliver are waiting: future_a, future_b"]
         now[0] = 61 * 60
         report.note(repository.unserved_kinds(names))
-        assert len(caplog.records) == 2
+        assert len(written(caplog)) == 2

@@ -30,6 +30,15 @@ The bot poller's lease (§2.4.1) goes over the same client: HttpLeaseStore keeps
 pair (holder, generation) the core answered and counts nothing itself; the leader
 (leader.py) counts the lease on its monotonic clock from before the request was sent.
 
+Trail (R3-03, events TZ §4.4): every call carries ``X-Wortly-Trace-Id`` and writes one
+``b.core`` line (trace, route template, status, the core's own error code, milliseconds; for
+a call that got no answer the exception class instead of a status). The trace is the one of
+the update being handled, or a fresh one outside an update (trail.call_trace). The line
+never holds the body, the actor, the query or a path with a value: the routes of this client
+are fixed templates and every identifier travels in the body. The poller's lease calls write
+a line only when they fail: renewals come every third of a lease and a standby bot's
+refused acquire (409 LEASE_HELD) every standby_retry; neither is a user path.
+
 Nothing here imports a database driver or a core service (design §9.5, finding Н2).
 """
 
@@ -39,6 +48,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import timedelta
 import re
+import time
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -48,6 +58,7 @@ from telegram import Update
 from wortly.identity.principal import TelegramPrincipal
 
 from .leader import ROLE
+from .trail import BOT, TRACE_HEADER, call_trace, emit
 
 if TYPE_CHECKING:
     from .config import CoreSettings
@@ -170,6 +181,15 @@ def _object(value: Any, keys: set[str]) -> dict:
     return value
 
 
+def _wire_code(response: httpx.Response) -> str | None:
+    """The error code the core's envelope carries, or None; never any other part of the answer."""
+    try:
+        code = response.json()["error"]["code"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return code if type(code) is str and _CODE.fullmatch(code) else None
+
+
 def _version(value: int) -> str:
     # Versions are bigint strings on the wire; the router counts them as integers.
     if type(value) is not int or value < 1:
@@ -200,13 +220,29 @@ class InternalClient:
 
     async def call(self, method: str, path: str, body: dict | None = None) -> httpx.Response:
         """One request within the deadline; CoreUnavailable when no answer came."""
+        trace, started = call_trace(), time.monotonic()
         try:
             async with asyncio.timeout(self._deadline):
-                return await self._client.request(method, self._base + path, json=body,
-                                                  headers={SERVICE_SECRET_HEADER: self._secret})
-        except (httpx.HTTPError, TimeoutError, OSError):
+                response = await self._client.request(
+                    method, self._base + path, json=body,
+                    headers={SERVICE_SECRET_HEADER: self._secret, TRACE_HEADER: trace})
+        except (httpx.HTTPError, TimeoutError, OSError) as error:
+            self._trail(path, trace, started, err=type(error).__name__)
             # from None: a transport error's text may name the address; the class says enough.
             raise CoreUnavailable() from None
+        self._trail(path, trace, started, status=response.status_code,
+                    code=None if response.is_success else _wire_code(response))
+        return response
+
+    def _trail(self, path: str, trace: str, started: float, *, status: int | None = None,
+               code: str | None = None, err: str | None = None) -> None:
+        """The ``b.core`` line of one call; the lease's successful and held-by-another calls are not a user path."""
+        if path.startswith("/leases/") and (status is not None and 200 <= status < 300
+                                             or (status, code) == (409, "LEASE_HELD")):
+            return
+        ms = max(0, round((time.monotonic() - started) * 1000))
+        emit("b.core", component=BOT, trace=trace, route=PREFIX + path, status=status, code=code, ms=ms,
+             err=err, lvl="warning" if status is None or status >= 500 else None)
 
     async def answer(self, path: str, body: dict, *, status: int = 200) -> Any:
         """POST ``body``; the JSON answer of ``status``, or the core's refusal raised."""

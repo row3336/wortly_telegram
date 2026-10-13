@@ -29,6 +29,7 @@ MODULES = (
     "wortly_telegram.config",
     "wortly_telegram.leader",
     "wortly_telegram.logs",
+    "wortly_telegram.trail",
     "wortly_telegram.bot_main",
     "wortly_telegram.service",
     "wortly_telegram.delivery",

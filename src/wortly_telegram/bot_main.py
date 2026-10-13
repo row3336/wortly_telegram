@@ -105,6 +105,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from .config import BotConfigurationError, load_bot_settings
     from .logs import private_logs
     from .router import RouterError
+    from .trail import BOT, process_trail
 
     parser = argparse.ArgumentParser(prog="python -m wortly_telegram.bot_main",
                                      description="Run the Wortly Telegram bot from an explicit configuration file.")
@@ -116,7 +117,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"wortly bot: configuration error: {error}", file=sys.stderr)
         return 2
     # The bot holds two secrets: the token in every written form and the service secret.
-    with private_logs((*token_forms(settings.telegram.bot_token), settings.core.service_secret)):
+    # The trail (R3-03) has its own INFO handler inside the same cleaning: lines never repeat in the root's.
+    with private_logs((*token_forms(settings.telegram.bot_token), settings.core.service_secret)), \
+            process_trail(BOT):
         try:
             return serve(settings)
         except RouterError as error:
