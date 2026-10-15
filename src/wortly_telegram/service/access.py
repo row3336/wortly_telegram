@@ -11,6 +11,11 @@ button of the access_reminder digest and the list below; callback_data is
   (the same update twice): nothing more is sent. VERSION_CONFLICT: "already handled" and
   the buttons go; the internal API tells nothing more of a decided request. FORBIDDEN:
   "not allowed". No answer of the core: "try again later" (§5.3 п.2).
+- A request whose applicant deleted the profile is gone from the core (P04 §3.3, PD-19): the
+  repeat of the same command_id is already_applied with current ``{"status": "unavailable"}``
+  and the owner is told the request is no longer available (the buttons go); a new press on it
+  is FORBIDDEN, answered like any FORBIDDEN, and nothing is written. The bot cannot tell that
+  FORBIDDEN from a refusal to a non-owner: the core gives the same code.
 - "Reject with a reason" asks for the reason; the owner's next plain text in this chat is
   the reason (router.TextInput). The input lives in this process's memory, one per
   owner chat, and is lost on a restart: the owner presses the button again. Q55 (approved by R12-14): a
@@ -62,6 +67,11 @@ REJECTED: dict[Language, str] = {"ru": "❌ Отклонён", "uk": "❌ Від
 # bot/i18n.py "access_already_handled"); final wording waits for the owner (T-TEXTS-PAGE).
 ALREADY_HANDLED: dict[Language, str] = {"ru": "ℹ️ Уже обработано", "uk": "ℹ️ Уже оброблено",
                                         "en": "ℹ️ Already handled"}
+# WORKING TEXT (not set by the specification): the answer to the repeat of a decision on a request that is gone
+# with its applicant's deleted profile (P04 §3.3, PD-19), new (the old bot had none);
+# final wording waits for the owner (T-TEXTS-PAGE).
+REQUEST_GONE: dict[Language, str] = {"ru": "ℹ️ Заявка больше недоступна", "uk": "ℹ️ Заявка більше недоступна",
+                                     "en": "ℹ️ The request is no longer available"}
 # WORKING TEXT (not set by the specification): the old bot's text (answer 2.7; OLD
 # bot/i18n.py "access_no_pending"); final wording waits for the owner (T-TEXTS-PAGE).
 NO_PENDING: dict[Language, str] = {"ru": "Нет заявок в ожидании.", "uk": "Немає заявок в очікуванні.",
@@ -178,6 +188,7 @@ class Outcome(Enum):
 
     APPLIED = "applied"
     REPEATED = "already_applied"
+    GONE = "request_gone"
     CONFLICT = "version_conflict"
     FORBIDDEN = "forbidden"
     REASON_REFUSED = "reason_refused"
@@ -202,7 +213,8 @@ async def _decide(update: Update, context: BotContext, decision: Decision, *, ap
     if status == "applied":
         return Outcome.APPLIED
     if status == "already_applied":
-        return Outcome.REPEATED
+        # The repeat of a decision on a request that went with its applicant's profile (P04 §3.3).
+        return Outcome.GONE if answer.get("current") == {"status": "unavailable"} else Outcome.REPEATED
     return Outcome.UNAVAILABLE
 
 
@@ -255,13 +267,16 @@ class AccessService:
                                   language: Language) -> None:
         query = update.callback_query
         outcome = await _decide(update, context, decision, approve=approve, reason=None)
-        notice = {Outcome.FORBIDDEN: FORBIDDEN[language], Outcome.UNAVAILABLE: TRY_LATER[language]}.get(outcome)
+        notice = {Outcome.FORBIDDEN: FORBIDDEN[language], Outcome.UNAVAILABLE: TRY_LATER[language],
+                  Outcome.GONE: REQUEST_GONE[language]}.get(outcome)
         await send_reply(lambda: query.answer(notice), sleep=context.sleep)
         chat_id, message_id, text = _pressed(update)
         if outcome == Outcome.APPLIED:
             await _edit(context, chat_id, message_id, _with(text, outcome_text(approve, None, language)))
         elif outcome == Outcome.CONFLICT:
             await _edit(context, chat_id, message_id, _with(text, ALREADY_HANDLED[language]))
+        elif outcome == Outcome.GONE:
+            await _edit(context, chat_id, message_id, _with(text, REQUEST_GONE[language]))
 
     async def on_reason(self, update: Update, context: BotContext) -> None:
         waiting = self.inputs.of(update)
@@ -286,7 +301,7 @@ class AccessService:
             await _say(update, context, FORBIDDEN[language])
             return
         result = (outcome_text(False, reason, language) if outcome == Outcome.APPLIED
-                  else ALREADY_HANDLED[language])
+                  else REQUEST_GONE[language] if outcome == Outcome.GONE else ALREADY_HANDLED[language])
         await _edit(context, waiting.chat_id, waiting.message_id, _with(waiting.message_text, result))
         await _say(update, context, result)
 

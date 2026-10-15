@@ -27,6 +27,7 @@ WORKING_TEXTS = (
     ("service/access.py", "APPROVED"),
     ("service/access.py", "REJECTED"),
     ("service/access.py", "ALREADY_HANDLED"),
+    ("service/access.py", "REQUEST_GONE"),
     ("service/access.py", "NO_PENDING"),
     ("service/access.py", "REASON_PROMPT"),
     ("service/access.py", "REASON_TOO_LONG"),

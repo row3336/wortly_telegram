@@ -126,6 +126,90 @@ async def test_an_answer_outside_the_contract_is_try_later(telegram, owner_gatew
     assert telegram.calls_to("editMessageText") == []
 
 
+# -- a request gone with its applicant's deleted profile (P04 §3.3, PD-19) -------------------
+
+GONE = {"ru": "ℹ️ Заявка больше недоступна", "uk": "ℹ️ Заявка більше недоступна",
+        "en": "ℹ️ The request is no longer available"}
+
+
+def gone() -> dict:
+    """The core's answer to the repeat of a decision whose request went with the applicant's profile."""
+    return {"command": {"id": str(uuid4()), "status": "already_applied", "applied_at": "2026-10-06T12:00:00Z",
+                        "target_id": str(REQUEST_ID), "object_version": "2"},
+            "current": {"status": "unavailable"}}
+
+
+@pytest.mark.parametrize("language", ["ru", "uk", "en"])
+@pytest.mark.parametrize("action", ["a", "r"])
+async def test_the_repeat_on_a_deleted_applicants_request_says_it_is_gone_and_drops_the_buttons(
+        telegram, owner_gateway, application, language, action):
+    owner_gateway.summaries[str(OWNER_ID)] = {**ADMITTED_OWNER, "ui_language": language}
+    owner_gateway.result = gone()
+    await feed(application, press(action))
+    [call] = decisions(owner_gateway)
+    assert call.principal == TelegramPrincipal(str(OWNER_ID))
+    assert callback_texts(telegram) == [GONE[language]]
+    [edit] = telegram.calls_to("editMessageText")
+    assert edit.params["text"] == f"{ORIGINAL}\n\n{GONE[language]}"
+    assert "reply_markup" not in edit.params
+    assert telegram.calls_to("sendMessage") == []
+
+
+@pytest.mark.parametrize("current", [None, {}, {"status": "other"}, {"status": "unavailable", "x": 1}, "unavailable"],
+                         ids=["null", "empty", "other-status", "extra-field", "string"])
+async def test_only_current_unavailable_is_the_gone_answer(telegram, owner_gateway, application, current):
+    # The repeat of an ordinary decision stays silent; an unknown "current" never invents "gone".
+    owner_gateway.result = {**applied("already_applied"), "current": current}
+    await feed(application, press("a"))
+    assert callback_texts(telegram) == [None]
+    assert telegram.calls_to("editMessageText") == []
+    assert telegram.calls_to("sendMessage") == []
+
+
+async def test_the_repeat_with_a_reason_on_a_gone_request_says_so_and_ends_the_input(
+        telegram, owner_gateway, application):
+    await feed(application, press("w"))
+    owner_gateway.result = gone()
+    await feed(application, say("причина"))
+    assert texts(telegram)[-1] == GONE["ru"]
+    [edit] = telegram.calls_to("editMessageText")
+    assert edit.params["text"] == f"{ORIGINAL}\n\n{GONE['ru']}"
+    # The input is over: the next plain text is not a reason.
+    owner_gateway.errors.clear()
+    await feed(application, say("ещё", message_id=51))
+    assert len(decisions(owner_gateway)) == 1
+
+
+@pytest.mark.parametrize("action", ["a", "r"])
+async def test_a_new_press_on_a_request_gone_is_forbidden_without_a_write(telegram, owner_gateway, application, action):
+    owner_gateway.errors["decide"] = CoreError("FORBIDDEN", status=403)
+    await feed(application, press(action, callback_id="905"))
+    assert callback_texts(telegram) == ["⛔ Нет прав."]
+    # One decision asked (the router's own summary and contact note aside), nothing edited or sent: only the notice.
+    assert [call.operation for call in owner_gateway.calls
+            if call.operation not in ("profile_summary", "note_contact")] == ["decide"]
+    assert telegram.calls_to("editMessageText") == [] and telegram.calls_to("sendMessage") == []
+
+
+async def test_a_reason_on_a_request_gone_is_forbidden_and_ends_the_input(telegram, owner_gateway, application):
+    await feed(application, press("w"))
+    owner_gateway.errors["decide"] = CoreError("FORBIDDEN", status=403)
+    await feed(application, say("причина"))
+    assert texts(telegram)[-1] == "⛔ Нет прав."
+    assert telegram.calls_to("editMessageText") == []
+    owner_gateway.errors.clear()
+    await feed(application, say("ещё", message_id=51))
+    assert len(decisions(owner_gateway)) == 1
+
+
+async def test_the_gone_answer_of_the_core_reaches_the_bot_over_the_internal_api(core, http_gateway):
+    core.answer("/internal/v1/admission/decide", httpx.Response(200, json=gone()))
+    answer = await http_gateway.decide(TelegramPrincipal(str(OWNER_ID)), command_id=uuid4(),
+                                            request_id=REQUEST_ID, expected_version=1, approve=True, reason=None)
+    assert answer["current"] == {"status": "unavailable"}
+    assert answer["command"]["status"] == "already_applied"
+
+
 # -- the actor is the sender, never the button ------------------------------------------
 
 async def test_the_actor_is_the_sender_of_the_press_not_the_chat_or_the_data(owner_gateway, application):
