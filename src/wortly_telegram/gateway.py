@@ -46,6 +46,12 @@ OwnerSearchResponse, OwnerCardResponse, OwnerCommandResponse) field by field, an
 outside it is CoreUnavailable, as for every other route. A command's body is built only from
 the arguments, never from an earlier answer, so the same update gives the same body (§4.4).
 
+Synonyms (stage B1b, core C4): ``synonym_candidates`` and the commands ``synonym_link``,
+``synonym_link_many``, ``synonym_unlink`` and ``synonym_clear`` post to ``/owner/synonyms/*``.
+The decoder knows the C4 schema exactly: OwnerCard carries ``synonyms`` (SynonymList) and
+OwnerSearchCard ``synonym_group_version``; an answer without them (a core before C4) is
+outside the contract like any other, so the bot and C4 are released together (gate C334).
+
 Nothing here imports a database driver or a core service (design §9.5, finding Н2).
 """
 
@@ -152,6 +158,9 @@ COMMAND_STATUSES = ("applied", "already_applied")
 INDEX_MAX = 99
 QUERY_MAX_CHARACTERS = 200
 SEARCH_LIMIT_MAX = 10
+# The core's bounds of synonyms (dictionary/synonyms.py): cards of one link_many, candidates offered.
+LINK_MANY_MAX = 20
+CANDIDATES_MAX = 20
 # The grammar a card type carries on the wire (ReferenceNoun, ReferenceVerb, ReferenceAdjective):
 # a form field with its own status, its closed values (None: free text), and the status-only and
 # plain-value fields.
@@ -173,6 +182,48 @@ class GrammarForm:
 
 
 @dataclass(frozen=True)
+class SynonymMember:
+    """One published card of a synonym group as the owner sees it (core SynonymMember)."""
+
+    card_id: UUID
+    lemma: str = field(repr=False)
+    card_type: str
+    cefr: str | None
+    state: str
+    preview: str | None = field(repr=False)
+
+
+@dataclass(frozen=True)
+class SynonymList:
+    """The synonym group of a card: ``version`` is the expected_group_version of the next command.
+
+    None without a group, then ``members`` is empty. Members by card id, the card itself
+    included; ``index`` of an unlink counts from 1 in this list.
+    """
+
+    version: int | None
+    members: tuple[SynonymMember, ...]
+
+
+@dataclass(frozen=True)
+class SynonymGroup:
+    """The group of ``card_id`` in the answer of a synonym command (core SynonymGroup)."""
+
+    card_id: UUID
+    card_type: str
+    synonyms: SynonymList
+
+
+@dataclass(frozen=True)
+class SynonymCommand:
+    """The core's answer to a synonym command; ``current`` is None for a demoted actor's repeat."""
+
+    status: str
+    version: int
+    current: SynonymGroup | None
+
+
+@dataclass(frozen=True)
 class OwnerCard:
     """A published card as the owner edits it in the bot (core OwnerCard).
 
@@ -191,11 +242,16 @@ class OwnerCard:
     state: str
     translations: dict[str, tuple[str, ...]] = field(repr=False)
     grammar: dict[str, GrammarForm | str] | None = field(repr=False)
+    synonyms: SynonymList = field(repr=False)
 
 
 @dataclass(frozen=True)
 class OwnerSearchCard:
-    """One card the owner's search found; ``preview`` is its first translation in the dictionary language."""
+    """One card the owner's search found; ``preview`` is its first translation in the dictionary language.
+
+    ``group_version`` is the version of the card's synonym group (None without one): a link
+    button keeps it as ``expected_other_group_version`` (§4.4).
+    """
 
     card_id: UUID
     lemma: str = field(repr=False)
@@ -203,6 +259,7 @@ class OwnerSearchCard:
     cefr: str | None
     state: str
     preview: str | None = field(repr=False)
+    group_version: int | None = None
 
 
 @dataclass(frozen=True)
@@ -268,9 +325,46 @@ def _grammar(value: Any, card_type: str) -> dict[str, GrammarForm | str] | None:
     return grammar
 
 
+def _optional_version_of(value: Any) -> int | None:
+    if value is None:
+        return None
+    if not is_version(value):
+        raise CoreUnavailable()
+    return int(value)
+
+
+def _synonym_member(value: Any) -> SynonymMember:
+    member = _object(value, {"card_id", "lemma", "type", "cefr", "state", "preview"})
+    if type(member["lemma"]) is not str:
+        raise CoreUnavailable()
+    return SynonymMember(_uuid(member["card_id"]), member["lemma"], _choice(member["type"], CARD_TYPES),
+                         _choice(member["cefr"], CEFR_LEVELS), _choice(member["state"], CARD_STATES),
+                         _optional_text(member["preview"]))
+
+
+def _synonym_list(value: Any, keys: set[str] = frozenset()) -> tuple[dict, SynonymList]:
+    """A SynonymList (and the extra ``keys`` of a SynonymGroup); members only with a group, all distinct."""
+    wire = _object(value, {"group_version", "members", *keys})
+    if not isinstance(wire["members"], list):
+        raise CoreUnavailable()
+    version = _optional_version_of(wire["group_version"])
+    members = tuple(_synonym_member(member) for member in wire["members"])
+    if (version is None and members) or len({member.card_id for member in members}) != len(members):
+        raise CoreUnavailable()
+    return wire, SynonymList(version, members)
+
+
+def _synonym_group(value: Any, card_id: UUID) -> SynonymGroup:
+    wire, synonyms = _synonym_list(value, {"card_id", "card_type"})
+    group = SynonymGroup(_uuid(wire["card_id"]), _choice(wire["card_type"], CARD_TYPES), synonyms)
+    if group.card_id != card_id:
+        raise CoreUnavailable()
+    return group
+
+
 def _owner_card(value: Any) -> OwnerCard:
     card = _object(value, {"card_id", "card_type", "lemma", "cefr", "card_revision", "language", "state",
-                           "translations", "grammar"})
+                           "translations", "grammar", "synonyms"})
     translations = _object(card["translations"], set(OWNER_LANGUAGES))
     card_type = _choice(card["card_type"], CARD_TYPES)
     if type(card["lemma"]) is not str or not is_version(card["card_revision"]):
@@ -279,31 +373,50 @@ def _owner_card(value: Any) -> OwnerCard:
                      int(card["card_revision"]), _choice(card["language"], OWNER_LANGUAGES),
                      _choice(card["state"], CARD_STATES),
                      {language: _text_list(translations[language]) for language in OWNER_LANGUAGES},
-                     _grammar(card["grammar"], card_type))
+                     _grammar(card["grammar"], card_type), _synonym_list(card["synonyms"])[1])
 
 
 def _search_card(value: Any) -> OwnerSearchCard:
-    card = _object(value, {"card_id", "lemma", "type", "cefr", "state", "preview"})
+    card = _object(value, {"card_id", "lemma", "type", "cefr", "state", "preview", "synonym_group_version"})
     if type(card["lemma"]) is not str:
         raise CoreUnavailable()
     return OwnerSearchCard(_uuid(card["card_id"]), card["lemma"], _choice(card["type"], CARD_TYPES),
                            _choice(card["cefr"], CEFR_LEVELS), _choice(card["state"], CARD_STATES),
-                           _optional_text(card["preview"]))
+                           _optional_text(card["preview"]), _optional_version_of(card["synonym_group_version"]))
+
+
+def _fact(answer: dict, command_id: UUID) -> tuple[str, int]:
+    """The status and object version of a command fact, checked against the command that was sent."""
+    fact = _object(answer["command"], {"id", "status", "applied_at", "target_id", "object_version"})
+    if (fact["id"] != str(command_id) or not is_version(fact["object_version"])
+            or type(fact["applied_at"]) is not str or not is_optional_text(fact["target_id"])):
+        raise CoreUnavailable()
+    return _choice(fact["status"], COMMAND_STATUSES), int(fact["object_version"])
+
+
+def _synonym_command(value: Any, command_id: UUID, card_id: UUID) -> SynonymCommand:
+    answer = _object(value, {"command", "current"})
+    status, version = _fact(answer, command_id)
+    current = None if answer["current"] is None else _synonym_group(answer["current"], card_id)
+    return SynonymCommand(status, version, current)
+
+
+def _owner_search(value: Any, limit: int) -> OwnerSearch:
+    answer = _object(value, {"cards", "more"})
+    if not isinstance(answer["cards"], list) or type(answer["more"]) is not bool or len(answer["cards"]) > limit:
+        raise CoreUnavailable()
+    return OwnerSearch(tuple(_search_card(card) for card in answer["cards"]), answer["more"])
 
 
 def _owner_command(value: Any, command_id: UUID, card_id: UUID) -> OwnerCommand:
     """The answer of one owner command, checked against the command that was sent."""
     answer = _object(value, {"command", "current"})
-    fact = _object(answer["command"], {"id", "status", "applied_at", "target_id", "object_version"})
-    if (fact["id"] != str(command_id) or not is_version(fact["object_version"])
-            or type(fact["applied_at"]) is not str or not is_optional_text(fact["target_id"])):
-        raise CoreUnavailable()
-    status = _choice(fact["status"], COMMAND_STATUSES)
+    status, version = _fact(answer, command_id)
     current = None if answer["current"] is None else _owner_card(answer["current"])
     if current is not None and current.card_id != card_id:
         # The answer is about another card than the command named.
         raise CoreUnavailable()
-    return OwnerCommand(status, int(fact["object_version"]), current)
+    return OwnerCommand(status, version, current)
 
 
 def _card_reference(card_id: UUID) -> str:
@@ -371,6 +484,10 @@ def _wire_code(response: httpx.Response) -> str | None:
     except (ValueError, KeyError, TypeError):
         return None
     return code if type(code) is str and _CODE.fullmatch(code) else None
+
+
+def _optional_version(value: int | None) -> str | None:
+    return None if value is None else _version(value)
 
 
 def _version(value: int) -> str:
@@ -514,10 +631,7 @@ class HttpCoreGateway:
         body = {**_actor(principal), "query": query, "limit": limit}
         if card_type is not None:
             body["type"] = card_type
-        answer = _object(await self.client.answer("/owner/cards/search", body), {"cards", "more"})
-        if not isinstance(answer["cards"], list) or type(answer["more"]) is not bool or len(answer["cards"]) > limit:
-            raise CoreUnavailable()
-        return OwnerSearch(tuple(_search_card(card) for card in answer["cards"]), answer["more"])
+        return _owner_search(await self.client.answer("/owner/cards/search", body), limit)
 
     async def owner_card(self, principal: TelegramPrincipal, *, card_id: UUID) -> OwnerCard:
         """One published card as the owner edits it; WRITE_UNAVAILABLE (409) for an absent or unpublished one."""
@@ -564,6 +678,52 @@ class HttpCoreGateway:
                 "field_name": field_name, "value": value,
                 "expected_card_revision": _version(expected_card_revision)}
         return _owner_command(await self.client.answer("/owner/cards/grammar", body), command_id, card_id)
+
+    # -- synonyms (stage B1b; core C4 /owner/synonyms/*) --------------------------------------
+
+    async def synonym_candidates(self, principal: TelegramPrincipal, *, card_id: UUID) -> OwnerSearch:
+        """A read: published cards of the type sharing a translation in the dictionary language (§3.5)."""
+        body = {**_actor(principal), "card_id": _card_reference(card_id)}
+        return _owner_search(await self.client.answer("/owner/synonyms/candidates", body), CANDIDATES_MAX)
+
+    async def _synonym(self, path: str, principal: TelegramPrincipal, command_id: UUID, card_id: UUID,
+                       fields: dict) -> SynonymCommand:
+        body = {**_actor(principal), "command_id": str(UUID(str(command_id))), "card_id": _card_reference(card_id),
+                **fields}
+        return _synonym_command(await self.client.answer(path, body), command_id, card_id)
+
+    async def synonym_link(self, principal: TelegramPrincipal, *, command_id: UUID, card_id: UUID,
+                           other_card_id: UUID, expected_group_version: int | None,
+                           expected_other_group_version: int | None) -> SynonymCommand:
+        """Join ``other_card_id`` (and its group) to the group of ``card_id``; both versions as the button saw them."""
+        return await self._synonym("/owner/synonyms/link", principal, command_id, card_id, {
+            "other_card_id": _card_reference(other_card_id),
+            "expected_group_version": _optional_version(expected_group_version),
+            "expected_other_group_version": _optional_version(expected_other_group_version)})
+
+    async def synonym_link_many(self, principal: TelegramPrincipal, *, command_id: UUID, card_id: UUID,
+                                other_card_ids: tuple[UUID, ...], expected_group_version: int | None
+                                ) -> SynonymCommand:
+        """Join the confirmed candidates of "pick by translation"; only the group of ``card_id`` is compared."""
+        if not 1 <= len(other_card_ids) <= LINK_MANY_MAX:
+            raise ValueError("link_many takes 1 to 20 cards")
+        return await self._synonym("/owner/synonyms/link_many", principal, command_id, card_id, {
+            "other_card_ids": [_card_reference(other) for other in other_card_ids],
+            "expected_group_version": _optional_version(expected_group_version)})
+
+    async def synonym_unlink(self, principal: TelegramPrincipal, *, command_id: UUID, card_id: UUID, index: int,
+                             expected_group_version: int) -> SynonymCommand:
+        """Remove the ``index``-th member (from 1) of the group of ``card_id`` as the button listed it."""
+        if type(index) is not int or not 1 <= index <= INDEX_MAX:
+            raise ValueError("A member index is 1 to 99")
+        return await self._synonym("/owner/synonyms/unlink", principal, command_id, card_id, {
+            "index": index, "expected_group_version": _version(expected_group_version)})
+
+    async def synonym_clear(self, principal: TelegramPrincipal, *, command_id: UUID, card_id: UUID,
+                            expected_group_version: int) -> SynonymCommand:
+        """Dissolve the whole group of ``card_id``."""
+        return await self._synonym("/owner/synonyms/clear", principal, command_id, card_id, {
+            "expected_group_version": _version(expected_group_version)})
 
     async def aclose(self) -> None:
         await self.client.aclose()

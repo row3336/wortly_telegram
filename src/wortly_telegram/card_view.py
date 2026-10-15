@@ -154,6 +154,7 @@ VIEW_TEXTS: dict[Language, dict[str, str]] = {
         "folded": "Другие языки свёрнуты: {languages}",
         "grammar": "Грамматика: {forms}",
         "no_grammar": "Грамматика: не заполнена",
+        "synonyms": "Синонимы: {members}",
         "list": "{lemma} — переводы {language}:",
         "empty": "Переводов нет.",
         "grammar_menu": "{lemma} — грамматика:",
@@ -170,6 +171,7 @@ VIEW_TEXTS: dict[Language, dict[str, str]] = {
         "folded": "Інші мови згорнуті: {languages}",
         "grammar": "Граматика: {forms}",
         "no_grammar": "Граматика: не заповнена",
+        "synonyms": "Синоніми: {members}",
         "list": "{lemma} — переклади {language}:",
         "empty": "Перекладів немає.",
         "grammar_menu": "{lemma} — граматика:",
@@ -186,6 +188,7 @@ VIEW_TEXTS: dict[Language, dict[str, str]] = {
         "folded": "Other languages folded: {languages}",
         "grammar": "Grammar: {forms}",
         "no_grammar": "Grammar: not filled",
+        "synonyms": "Synonyms: {members}",
         "list": "{lemma} — translations {language}:",
         "empty": "No translations.",
         "grammar_menu": "{lemma} — grammar:",
@@ -201,12 +204,15 @@ VIEW_TEXTS: dict[Language, dict[str, str]] = {
 # final wording waits for the owner (T-TEXTS-PAGE).
 LABELS: dict[Language, dict[str, str]] = {
     "ru": {"own": "✏️ Переводы {language}", "other": "▸ {language} ({count})", "grammar": "Грамматика",
+           "synonyms": "Синонимы",
            "refresh": "🔄 Обновить", "back": "⬅ К карточке", "add": "➕ Добавить", "edit": "✏️ {index}",
            "up": "⬆", "down": "⬇", "remove": "✖", "enter": "Ввести форму", "to_grammar": "⬅ Грамматика"},
     "uk": {"own": "✏️ Переклади {language}", "other": "▸ {language} ({count})", "grammar": "Граматика",
+           "synonyms": "Синоніми",
            "refresh": "🔄 Оновити", "back": "⬅ До картки", "add": "➕ Додати", "edit": "✏️ {index}",
            "up": "⬆", "down": "⬇", "remove": "✖", "enter": "Ввести форму", "to_grammar": "⬅ Граматика"},
     "en": {"own": "✏️ Translations {language}", "other": "▸ {language} ({count})", "grammar": "Grammar",
+           "synonyms": "Synonyms",
            "refresh": "🔄 Refresh", "back": "⬅ To the card", "add": "➕ Add", "edit": "✏️ {index}",
            "up": "⬆", "down": "⬇", "remove": "✖", "enter": "Enter a form", "to_grammar": "⬅ Grammar"},
 }
@@ -446,6 +452,10 @@ def card_view(card: OwnerCard, language: Language) -> View:
             f"{FIELD_LABELS[language][name]} — {form_text(card, name, language)}" for name in fields))
             if card.grammar is not None else texts["no_grammar"])
         rows.append((CallbackButton(labels["grammar"], _data(GRAMMAR, code)),))
+    # The synonym group (§3.5, stage B4): the other members' lemmas; its own function answers "sy:".
+    others = [member.lemma for member in card.synonyms.members if member.card_id != card.card_id]
+    lines.append(texts["synonyms"].format(members=", ".join(others) or texts["none"]))
+    rows.append((CallbackButton(labels["synonyms"], f"sy:v:{code}"),))
     rows.append((CallbackButton(labels["refresh"], _data(CARD, code)),))
     return View(fit("\n".join(lines)), tuple(rows))
 

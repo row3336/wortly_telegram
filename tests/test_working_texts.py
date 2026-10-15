@@ -42,6 +42,8 @@ WORKING_TEXTS = (
     ("card_view.py", "TYPE_LABELS"),
     ("card_view.py", "FIELD_LABELS"),
     ("card_view.py", "VALUE_LABELS"),
+    ("synonym_view.py", "SYNONYM_TEXTS"),
+    ("synonym_view.py", "SYNONYM_LABELS"),
 )
 
 # Constants whose wording the owner approved (R10, S04, S05, S06; 08.10.2026): they carry the approval mark instead.

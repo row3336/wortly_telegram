@@ -24,7 +24,7 @@ from wortly_telegram.card_view import (
     CALLBACK_PREFIX, GRAMMAR_FIELDS, TEXT_MAX_CHARACTERS, View, card_code, card_of, field_options, grammar_view,
     list_view, parse, with_notice,
 )
-from wortly_telegram.gateway import GrammarForm, OwnerCard, build_gateway
+from wortly_telegram.gateway import GrammarForm, OwnerCard, SynonymList, build_gateway
 from wortly_telegram.messages import CALLBACK_DATA_BYTES
 from wortly_telegram.router import command_id, discover
 from wortly_telegram.service import card_editor
@@ -115,7 +115,8 @@ def wire_card(**changes) -> OwnerCard:
     values = dict(card_id=CARD, card_type="noun", lemma="das Haus", cefr="A1", revision=7, language="ru",
                   state="visible", translations={"ru": ("дом", "здание"), "uk": ("будинок",), "en": ()},
                   grammar={"gender": GrammarForm("applicable", "neuter"), "singular": GrammarForm("applicable", "Haus"),
-                           "plural": GrammarForm("applicable", "Häuser"), "article": GrammarForm("applicable")})
+                           "plural": GrammarForm("applicable", "Häuser"), "article": GrammarForm("applicable")},
+                  synonyms=SynonymList(None, ()))
     return OwnerCard(**(values | changes))
 
 
@@ -197,10 +198,11 @@ async def test_a_found_card_opens_with_its_state_translations_and_buttons(telegr
                                      "Состояние: опубликована\n"
                                      "Переводы ru (язык словаря): 1. дом; 2. здание\n"
                                      "Другие языки свёрнуты: uk (1), en (0)\n"
-                                     "Грамматика: род — das; ед. ч. — Haus; мн. ч. — Häuser; артикль — Применим")
+                                     "Грамматика: род — das; ед. ч. — Haus; мн. ч. — Häuser; артикль — Применим\n"
+                                     "Синонимы: —")
     # R17-02 variant 1: every language has its list; the other ones stay folded until opened.
     assert buttons(answer) == [f"ce:tl:ru:{CODE}", f"ce:tl:uk:{CODE}", f"ce:tl:en:{CODE}", f"ce:g:{CODE}",
-                               f"ce:c:{CODE}"]
+                               f"sy:v:{CODE}", f"ce:c:{CODE}"]
     assert "будинок" not in answer.params["text"]
     assert [call.params.get("text") for call in telegram.calls_to("answerCallbackQuery")] == [None]
 
@@ -657,7 +659,7 @@ def test_the_shipped_service_package_declares_the_editor():
     assert (function.commands, function.callback_prefix, function.audience) == (("find",), "ce", "owner")
     assert function.text_input is not None
     assert card_editor.SERVICE_FUNCTIONS == (function,)
-    assert sorted(item.name for item in discover()) == ["access", "card_editor"]
+    assert sorted(item.name for item in discover()) == ["access", "card_editor", "synonyms"]
 
 
 async def test_the_same_grammar_text_twice_is_the_same_command(telegram, core, application):

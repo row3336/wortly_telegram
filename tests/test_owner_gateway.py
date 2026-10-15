@@ -18,7 +18,8 @@ import pytest
 from fakes.core_gateway import CORE_SECRET, FakeCore, core_settings, envelope, forbid_network, owner_card_wire
 from wortly.identity.principal import TelegramPrincipal
 from wortly_telegram.gateway import (
-    CoreError, CoreUnavailable, GrammarForm, OwnerCard, OwnerCommand, OwnerSearch, OwnerSearchCard, build_gateway,
+    CoreError, CoreUnavailable, GrammarForm, OwnerCard, OwnerCommand, OwnerSearch, OwnerSearchCard, SynonymList,
+    build_gateway,
 )
 
 
@@ -138,12 +139,13 @@ async def test_a_malformed_search_never_leaves_the_bot(core, gateway, arguments)
 
 async def test_the_answers_become_the_editor_objects(core, gateway):
     found = await gateway.owner_search(OWNER, query="haus")
-    assert found == OwnerSearch((OwnerSearchCard(CARD, "das Haus", "noun", "A1", "visible", "дом"),), False)
+    assert found == OwnerSearch((OwnerSearchCard(CARD, "das Haus", "noun", "A1", "visible", "дом", None),), False)
     card = await gateway.owner_card(OWNER, card_id=CARD)
     assert card == OwnerCard(CARD, "noun", "das Haus", "A1", 7, "ru", "visible",
                              {"ru": ("дом", "здание"), "uk": ("будинок",), "en": ()},
                              {"gender": GrammarForm("applicable", "neuter"), "singular": GrammarForm("applicable", "Haus"),
-                              "plural": GrammarForm("applicable", "Häuser"), "article": GrammarForm("applicable")})
+                              "plural": GrammarForm("applicable", "Häuser"), "article": GrammarForm("applicable")},
+                             SynonymList(None, ()))
     done = await gateway.translation_op(OWNER, command_id=COMMAND, card_id=CARD, language="ru", op="move_down",
                                         index=1, text=None, expected_card_revision=7)
     assert (done.status, done.revision, done.current.translations["ru"]) == ("applied", 8, ("здание", "дом"))

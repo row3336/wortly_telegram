@@ -17,6 +17,7 @@ import json
 import socket
 import time
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -182,6 +183,11 @@ class FakeCore:
         # The owner editor's catalog (OwnerCard wire objects by card id) and its command facts.
         self.cards: dict[str, dict] = {}
         self.facts: dict[str, tuple[dict, dict]] = {}
+        # Synonym groups (core C4, dictionary/synonyms.py): members and version of each group, the
+        # group of each card, and one version sequence: a version never repeats.
+        self.groups: dict[str, dict] = {}
+        self.group_of: dict[str, str] = {}
+        self.versions = 100
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
@@ -218,6 +224,8 @@ class FakeCore:
             return httpx.Response(200, json={"profile": self.summaries.get(body["actor_telegram_id"])})
         if path.startswith("/internal/v1/owner/cards/"):
             return self._owner_route(path.rsplit("/", 1)[1], body)
+        if path.startswith("/internal/v1/owner/synonyms/"):
+            return self._synonym_route(path.rsplit("/", 1)[1], body)
         if path == "/internal/v1/contact":
             return httpx.Response(204)
         if path == "/internal/v1/admission/pending_requests":
@@ -236,7 +244,7 @@ class FakeCore:
             return envelope(403, "FORBIDDEN")
         if route == "search":
             return self._search(body)
-        card = self.cards.get(body["card_id"])
+        card = self._card_out(self.cards.get(body["card_id"]))
         if route == "read":
             return httpx.Response(200, json={"current": card}) if card else envelope(409, "WRITE_UNAVAILABLE")
         command = body["command_id"]
@@ -259,7 +267,7 @@ class FakeCore:
         fact = {"id": command, "status": "applied", "applied_at": "2026-10-15T12:00:00Z",
                 "target_id": body["card_id"], "object_version": changed["card_revision"]}
         self.facts[command] = (body, fact)
-        return httpx.Response(200, json={"command": fact, "current": changed})
+        return httpx.Response(200, json={"command": fact, "current": self._card_out(changed)})
 
     def _search(self, body: dict) -> httpx.Response:
         query = body["query"].strip().lower()
@@ -269,9 +277,118 @@ class FakeCore:
                       or any(query in text.lower() for texts in card["translations"].values() for text in texts))]
         found.sort(key=lambda card: card["card_id"])
         cards = [{"card_id": card["card_id"], "lemma": card["lemma"], "type": card["card_type"], "cefr": card["cefr"],
-                  "state": card["state"], "preview": (card["translations"][card["language"]] or [None])[0]}
+                  "state": card["state"], "preview": (card["translations"][card["language"]] or [None])[0],
+                  "synonym_group_version": self._version_of(card["card_id"])}
                  for card in found[:body["limit"]]]
         return httpx.Response(200, json={"cards": cards, "more": len(found) > body["limit"]})
+
+    # -- synonym groups (core C4) ---------------------------------------------------------------
+
+    def _version_of(self, card_id: str) -> str | None:
+        group = self.group_of.get(card_id)
+        return None if group is None else str(self.groups[group]["version"])
+
+    def _synonym_list(self, card_id: str) -> dict:
+        group = self.group_of.get(card_id)
+        if group is None:
+            return {"group_version": None, "members": []}
+        members = [self.cards[member] for member in sorted(self.groups[group]["members"])]
+        return {"group_version": str(self.groups[group]["version"]),
+                "members": [{"card_id": card["card_id"], "lemma": card["lemma"], "type": card["card_type"],
+                             "cefr": card["cefr"], "state": card["state"],
+                             "preview": (card["translations"][card["language"]] or [None])[0]} for card in members]}
+
+    def _card_out(self, card: dict | None) -> dict | None:
+        return None if card is None else {**card, "synonyms": self._synonym_list(card["card_id"])}
+
+    def _next_version(self) -> int:
+        self.versions += 1
+        return self.versions
+
+    def _group_out(self, card_id: str) -> dict:
+        return {"card_id": card_id, "card_type": self.cards[card_id]["card_type"], **self._synonym_list(card_id)}
+
+    def link_cards(self, *card_ids: str) -> int:
+        """Put cards into one group, as the owner's earlier work (or another chat) did; returns its version."""
+        group = self.group_of.get(card_ids[0]) or str(uuid4())
+        self.groups.setdefault(group, {"members": set(), "version": 0})
+        for card_id in card_ids:
+            old = self.group_of.get(card_id)
+            if old is not None and old != group:
+                for member in self.groups.pop(old)["members"]:
+                    self.group_of[member] = group
+                    self.groups[group]["members"].add(member)
+            self.group_of[card_id] = group
+            self.groups[group]["members"].add(card_id)
+        self.groups[group]["version"] = self._next_version()
+        return self.groups[group]["version"]
+
+    def _dissolve_small(self, group: str) -> None:
+        if len(self.groups[group]["members"]) < 2:
+            for member in self.groups.pop(group)["members"]:
+                self.group_of.pop(member, None)
+
+    def _synonym_route(self, route: str, body: dict) -> httpx.Response:
+        summary = self.summaries.get(body["actor_telegram_id"]) or {}
+        if (summary.get("role"), summary.get("status")) != ("owner", "admitted"):
+            return envelope(403, "FORBIDDEN")
+        card_id = body["card_id"]
+        card = self.cards.get(card_id)
+        if route == "candidates":
+            if card is None:
+                return envelope(409, "WRITE_UNAVAILABLE")
+            own = {text.casefold() for text in card["translations"][card["language"]]}
+            group = self.group_of.get(card_id)
+            found = [other for other in sorted(self.cards.values(), key=lambda item: (item["lemma"], item["card_id"]))
+                     if other["card_type"] == card["card_type"] and other["card_id"] != card_id
+                     and (group is None or self.group_of.get(other["card_id"]) != group)
+                     and own & {text.casefold() for text in other["translations"][other["language"]]}]
+            cards = [{"card_id": other["card_id"], "lemma": other["lemma"], "type": other["card_type"],
+                      "cefr": other["cefr"], "state": other["state"],
+                      "preview": (other["translations"][other["language"]] or [None])[0],
+                      "synonym_group_version": self._version_of(other["card_id"])} for other in found[:20]]
+            return httpx.Response(200, json={"cards": cards, "more": len(found) > 20})
+        command = body["command_id"]
+        if command in self.facts:
+            prior, fact = self.facts[command]
+            if prior != body:
+                return envelope(409, "COMMAND_PAYLOAD_MISMATCH")
+            return httpx.Response(200, json={"command": {**fact, "status": "already_applied"},
+                                             "current": self._group_out(card_id) if card else None})
+        others = [body["other_card_id"]] if route == "link" else body.get("other_card_ids", [])
+        if card is None or any(other not in self.cards for other in others):
+            return envelope(409, "WRITE_UNAVAILABLE")
+        if card_id in others or any(self.cards[other]["card_type"] != card["card_type"] for other in others):
+            return envelope(422, "VALIDATION_FAILED")
+        if self._version_of(card_id) != body["expected_group_version"]:
+            return envelope(409, "VERSION_CONFLICT")
+        if route == "link" and self._version_of(others[0]) != body["expected_other_group_version"]:
+            return envelope(409, "VERSION_CONFLICT")
+        group = self.group_of.get(card_id)
+        if route in ("link", "link_many"):
+            if group is not None and all(self.group_of.get(other) == group for other in others):
+                version = self.groups[group]["version"]
+            else:
+                version = self.link_cards(card_id, *others)
+        else:
+            if route == "unlink":
+                members = sorted(self.groups[group]["members"])
+                if not 1 <= body["index"] <= len(members):
+                    return envelope(422, "VALIDATION_FAILED")
+                gone = members[body["index"] - 1]
+                self.groups[group]["members"].discard(gone)
+                self.group_of.pop(gone)
+            else:
+                for member in self.groups[group]["members"]:
+                    self.group_of.pop(member)
+                self.groups[group]["members"] = set()
+            version = self._next_version()
+            self.groups[group]["version"] = version
+            self._dissolve_small(group)
+        fact = {"id": command, "status": "applied", "applied_at": "2026-10-15T12:00:00Z", "target_id": card_id,
+                "object_version": str(version)}
+        self.facts[command] = (body, fact)
+        return httpx.Response(200, json={"command": fact, "current": self._group_out(card_id)})
 
     @staticmethod
     def _translation(card: dict, body: dict) -> dict:
@@ -393,4 +510,4 @@ def owner_card_wire(card_id: str, *, card_type: str = "noun", lemma: str = "das 
     return {"card_id": card_id, "card_type": card_type, "lemma": lemma, "cefr": cefr,
             "card_revision": str(revision), "language": language,
             "state": "visible" if texts[language] else "no_translation", "translations": texts,
-            "grammar": row or None}
+            "grammar": row or None, "synonyms": {"group_version": None, "members": []}}

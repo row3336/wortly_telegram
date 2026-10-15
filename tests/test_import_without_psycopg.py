@@ -33,6 +33,8 @@ MODULES = (
     "wortly_telegram.bot_main",
     "wortly_telegram.service",
     "wortly_telegram.service.card_editor",
+    "wortly_telegram.service.synonyms",
+    "wortly_telegram.synonym_view",
     "wortly_telegram.card_view",
     "wortly_telegram.echo",
     "wortly_telegram.delivery",
