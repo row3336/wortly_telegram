@@ -366,7 +366,8 @@ async def test_a_refused_list_is_a_notice(telegram, owner_gateway, application, 
 
 
 def test_the_shipped_service_package_declares_the_access_function():
-    [function] = discover()
+    # The package also holds the owner's common editor (service/card_editor.py, DEV-17 B2).
+    [function] = [item for item in discover() if item.name == "access"]
     assert (function.name, function.commands, function.callback_prefix, function.audience) == (
         "access", (), "acc", "owner")
     assert function.text_input is not None

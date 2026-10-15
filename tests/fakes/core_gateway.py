@@ -177,6 +177,11 @@ class FakeCore:
         self.cancelled: list[str] = []
         # The pending_requests answer, in the core's wire shape (PendingRequestsResponse).
         self.pending: list[dict] = []
+        # The profile summary of each Telegram ID (ProfileSummary); absent: no profile.
+        self.summaries: dict[str, dict] = {}
+        # The owner editor's catalog (OwnerCard wire objects by card id) and its command facts.
+        self.cards: dict[str, dict] = {}
+        self.facts: dict[str, tuple[dict, dict]] = {}
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
@@ -210,7 +215,9 @@ class FakeCore:
                 self.cancelled.append(path)
                 raise
         if path == "/internal/v1/admission/summary":
-            return httpx.Response(200, json={"profile": None})
+            return httpx.Response(200, json={"profile": self.summaries.get(body["actor_telegram_id"])})
+        if path.startswith("/internal/v1/owner/cards/"):
+            return self._owner_route(path.rsplit("/", 1)[1], body)
         if path == "/internal/v1/contact":
             return httpx.Response(204)
         if path == "/internal/v1/admission/pending_requests":
@@ -220,6 +227,90 @@ class FakeCore:
                        "target_id": None, "object_version": "2"}
             return httpx.Response(200, json={"command": command, "current": {"mode": "manual", "version": "2"}})
         return envelope(404, "NOT_FOUND")
+
+    # -- the owner's common editor, with the core's rules that the bot relies on (project DEV-17 §4) --
+
+    def _owner_route(self, route: str, body: dict) -> httpx.Response:
+        summary = self.summaries.get(body["actor_telegram_id"]) or {}
+        if (summary.get("role"), summary.get("status")) != ("owner", "admitted"):
+            return envelope(403, "FORBIDDEN")
+        if route == "search":
+            return self._search(body)
+        card = self.cards.get(body["card_id"])
+        if route == "read":
+            return httpx.Response(200, json={"current": card}) if card else envelope(409, "WRITE_UNAVAILABLE")
+        command = body["command_id"]
+        if command in self.facts:
+            # The same command again (identity/service.py _prior): its fact, or the mismatch.
+            prior, fact = self.facts[command]
+            if prior != body:
+                return envelope(409, "COMMAND_PAYLOAD_MISMATCH")
+            return httpx.Response(200, json={"command": {**fact, "status": "already_applied"}, "current": card})
+        if card is None:
+            return envelope(409, "WRITE_UNAVAILABLE")
+        if body["expected_card_revision"] != card["card_revision"]:
+            return envelope(409, "VERSION_CONFLICT")
+        try:
+            changed = self._translation(card, body) if route == "translation" else self._grammar(card, body)
+        except ValueError:
+            return envelope(422, "VALIDATION_FAILED")
+        changed["card_revision"] = str(int(card["card_revision"]) + 1)
+        self.cards[body["card_id"]] = changed
+        fact = {"id": command, "status": "applied", "applied_at": "2026-10-15T12:00:00Z",
+                "target_id": body["card_id"], "object_version": changed["card_revision"]}
+        self.facts[command] = (body, fact)
+        return httpx.Response(200, json={"command": fact, "current": changed})
+
+    def _search(self, body: dict) -> httpx.Response:
+        query = body["query"].strip().lower()
+        found = [card for card in self.cards.values()
+                 if body.get("type") in (None, card["card_type"])
+                 and (query == card["card_id"] or query in card["lemma"].lower()
+                      or any(query in text.lower() for texts in card["translations"].values() for text in texts))]
+        found.sort(key=lambda card: card["card_id"])
+        cards = [{"card_id": card["card_id"], "lemma": card["lemma"], "type": card["card_type"], "cefr": card["cefr"],
+                  "state": card["state"], "preview": (card["translations"][card["language"]] or [None])[0]}
+                 for card in found[:body["limit"]]]
+        return httpx.Response(200, json={"cards": cards, "more": len(found) > body["limit"]})
+
+    @staticmethod
+    def _translation(card: dict, body: dict) -> dict:
+        texts = list(card["translations"][body["language"]])
+        op, index, text = body["op"], body.get("index"), body.get("text")
+        if op == "append":
+            texts.append(text.strip())
+        else:
+            if not 1 <= index <= len(texts):
+                raise ValueError
+            at = index - 1
+            if op == "replace":
+                texts[at] = text.strip()
+            elif op == "remove":
+                if len(texts) == 1:
+                    raise ValueError  # R12-06
+                del texts[at]
+            else:
+                other = at - 1 if op == "move_up" else at + 1
+                if not 0 <= other < len(texts):
+                    raise ValueError
+                texts[at], texts[other] = texts[other], texts[at]
+        translations = {**card["translations"], body["language"]: texts}
+        state = "visible" if translations[card["language"]] else "no_translation"
+        return {**card, "translations": translations, "state": state}
+
+    @staticmethod
+    def _grammar(card: dict, body: dict) -> dict:
+        name, value = body["field_name"], body["value"]
+        grammar = dict(card["grammar"])
+        if name == "separability":
+            grammar[name] = value
+        elif name == "article":
+            grammar["article_status"] = value["status"]
+        else:
+            if value["status"] == "unknown" and name in ("preterite", "comparative", "superlative", "participle_ii"):
+                raise ValueError  # incomplete on a published card (validation.py)
+            grammar[name], grammar[f"{name}_status"] = value["value"], value["status"]
+        return {**card, "grammar": grammar}
 
     async def _lease_route(self, action: str, body: dict) -> httpx.Response:
         arrived = self.now()
@@ -276,3 +367,30 @@ def forbid_network(monkeypatch) -> list:
     monkeypatch.setattr(socket, "getaddrinfo", refused)
     monkeypatch.setattr(socket, "create_connection", refused)
     return attempts
+
+
+# -- the owner editor's cards in the core's wire shape (internal_models.OwnerCard) ----------
+
+GRAMMAR_ROWS = {
+    "noun": {"gender": "neuter", "gender_status": "applicable", "singular": "Haus", "singular_status": "applicable",
+             "plural": "Häuser", "plural_status": "applicable", "article_status": "applicable"},
+    "verb": {"infinitive": "gehen", "infinitive_status": "applicable", "preterite": "ging",
+             "preterite_status": "applicable", "participle_ii": "gegangen", "participle_ii_status": "applicable",
+             "auxiliary": "sein", "auxiliary_status": "applicable", "separability": "inseparable"},
+    "adjective": {"positive": "gut", "positive_status": "applicable", "comparative": "besser",
+                  "comparative_status": "applicable", "superlative": "am besten",
+                  "superlative_status": "applicable"},
+}
+
+
+def owner_card_wire(card_id: str, *, card_type: str = "noun", lemma: str = "das Haus", revision: int = 7,
+                    language: str = "ru", translations: dict | None = None, grammar: dict | None = None,
+                    cefr: str | None = "A1") -> dict:
+    """A published card as the core's /owner/cards/* routes answer it (synthetic values)."""
+    texts = {"ru": ["дом", "здание"], "uk": ["будинок"], "en": []} if translations is None else translations
+    texts = {language_: list(texts.get(language_, [])) for language_ in ("ru", "uk", "en")}
+    row = dict(GRAMMAR_ROWS.get(card_type, {})) if grammar is None else grammar
+    return {"card_id": card_id, "card_type": card_type, "lemma": lemma, "cefr": cefr,
+            "card_revision": str(revision), "language": language,
+            "state": "visible" if texts[language] else "no_translation", "translations": texts,
+            "grammar": row or None}

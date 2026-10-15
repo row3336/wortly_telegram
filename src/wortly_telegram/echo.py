@@ -13,10 +13,10 @@ This is the second narrow exception to ВП-16 (R9-05, К19-049): the echo is se
 heading and the hint as ordinary MarkdownV2 text, the value inside its code entity, so no
 value can end the block or add markup. The Mini App has no echo (R9-05).
 
-Connection point (DEV-17): the service function that edits common fields does not exist yet;
-it waits for the core's owner route (DEV-15, P04). That function calls ``send_echo`` with the
-field's current value, as the old bot did, before it asks for the new one. Nothing here
-reads or writes a card, and nothing calls this module yet.
+Connection point (DEV-17 B2, B3): the owner's common editor (service/card_editor.py) calls
+``send_echo`` with the field's current value, as the old bot did, before it asks for the new
+one: a translation before its ✏️ input, a grammar form before its value buttons. Nothing here
+reads or writes a card.
 """
 
 from __future__ import annotations

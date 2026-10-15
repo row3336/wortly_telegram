@@ -39,6 +39,13 @@ are fixed templates and every identifier travels in the body. The poller's lease
 a line only when they fail: renewals come every third of a lease and a standby bot's
 refused acquire (409 LEASE_HELD) every standby_retry; neither is a user path.
 
+The owner's common editor (project DEV-17 §4.2, stage B1a; core C1-C3): ``owner_search``,
+``owner_card``, ``translation_op`` and ``grammar_save`` post to the core's ``/owner/cards/*``
+routes. Each answer is checked against the internal schema (docs/openapi_internal.json:
+OwnerSearchResponse, OwnerCardResponse, OwnerCommandResponse) field by field, and an answer
+outside it is CoreUnavailable, as for every other route. A command's body is built only from
+the arguments, never from an earlier answer, so the same update gives the same body (§4.4).
+
 Nothing here imports a database driver or a core service (design §9.5, finding Н2).
 """
 
@@ -127,6 +134,182 @@ class PendingRequest:
     first_name: str | None = field(repr=False)
     username: str | None = field(repr=False)
     requested_at: str = field(repr=False)
+
+
+# -- the owner's common editor (project DEV-17 §4.2; core internal_models.Owner*) ---------
+
+# The closed lists of the internal schema (core api/internal_models.py, dictionary/validation.py).
+OWNER_LANGUAGES = ("ru", "uk", "en")
+CARD_TYPES = ("noun", "verb", "phrase", "adjective", "pronoun", "adverb", "preposition", "conjunction",
+              "particle")
+CEFR_LEVELS = ("A1", "A2", "B1", "B2", "C1", "C2", None)
+CARD_STATES = ("visible", "no_translation")
+FORM_STATUSES = ("applicable", "not_applicable", "unknown")
+SEPARABILITY = ("separable", "inseparable", "unknown")
+TRANSLATION_OPERATIONS = ("replace", "append", "remove", "move_up", "move_down")
+COMMAND_STATUSES = ("applied", "already_applied")
+# The core's bounds (dictionary/owner_editor.py): the index of a list operation, the query, the limit.
+INDEX_MAX = 99
+QUERY_MAX_CHARACTERS = 200
+SEARCH_LIMIT_MAX = 10
+# The grammar a card type carries on the wire (ReferenceNoun, ReferenceVerb, ReferenceAdjective):
+# a form field with its own status, its closed values (None: free text), and the status-only and
+# plain-value fields.
+_FORM_FIELDS: dict[str, dict[str, tuple[str, ...] | None]] = {
+    "noun": {"gender": ("masculine", "feminine", "neuter"), "singular": None, "plural": None},
+    "verb": {"infinitive": None, "preterite": None, "participle_ii": None, "auxiliary": ("haben", "sein")},
+    "adjective": {"positive": None, "comparative": None, "superlative": None},
+}
+_STATUS_ONLY = {"noun": ("article",)}
+_PLAIN = {"verb": ("separability",)}
+
+
+@dataclass(frozen=True)
+class GrammarForm:
+    """One grammar column of a card: its applicability and at most one form (core validation.Form)."""
+
+    status: str
+    value: str | None = None
+
+
+@dataclass(frozen=True)
+class OwnerCard:
+    """A published card as the owner edits it in the bot (core OwnerCard).
+
+    ``revision`` versions every common field (card_revision). ``translations`` holds every
+    language in display order, an untranslated one empty. ``grammar`` maps each editable
+    field of the type to a GrammarForm, ``separability`` to its plain value; None for a type
+    without grammar or a card without its grammar row. Texts stay out of the repr.
+    """
+
+    card_id: UUID
+    card_type: str
+    lemma: str = field(repr=False)
+    cefr: str | None
+    revision: int
+    language: str
+    state: str
+    translations: dict[str, tuple[str, ...]] = field(repr=False)
+    grammar: dict[str, GrammarForm | str] | None = field(repr=False)
+
+
+@dataclass(frozen=True)
+class OwnerSearchCard:
+    """One card the owner's search found; ``preview`` is its first translation in the dictionary language."""
+
+    card_id: UUID
+    lemma: str = field(repr=False)
+    card_type: str
+    cefr: str | None
+    state: str
+    preview: str | None = field(repr=False)
+
+
+@dataclass(frozen=True)
+class OwnerSearch:
+    cards: tuple[OwnerSearchCard, ...]
+    more: bool
+
+
+@dataclass(frozen=True)
+class OwnerCommand:
+    """The core's answer to an owner command: the fact's status and the card now.
+
+    ``current`` is None on the repeat of a command whose actor is no longer the owner
+    (project §4.4, ed. 3.3): the card is not shown to them.
+    """
+
+    status: str
+    revision: int
+    current: OwnerCard | None
+
+
+def _text_list(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(type(item) is str for item in value):
+        raise CoreUnavailable()
+    return tuple(value)
+
+
+def _uuid(value: Any) -> UUID:
+    if type(value) is not str:
+        raise CoreUnavailable()
+    try:
+        return UUID(value)
+    except ValueError:
+        raise CoreUnavailable() from None
+
+
+def _choice(value: Any, choices: tuple) -> Any:
+    if value not in choices or (value is not None and type(value) is not str):
+        raise CoreUnavailable()
+    return value
+
+
+def _grammar(value: Any, card_type: str) -> dict[str, GrammarForm | str] | None:
+    """The card's grammar of the wire, or None; a column the type does not have is outside the contract."""
+    if value is None:
+        return None
+    forms = _FORM_FIELDS.get(card_type)
+    if forms is None:
+        raise CoreUnavailable()
+    status_only, plain = _STATUS_ONLY.get(card_type, ()), _PLAIN.get(card_type, ())
+    keys = {*forms, *(f"{name}_status" for name in forms), *(f"{name}_status" for name in status_only), *plain}
+    wire = _object(value, keys)
+    grammar: dict[str, GrammarForm | str] = {}
+    for name, closed in forms.items():
+        form = _optional_text(wire[name])
+        if form is not None and closed is not None and form not in closed:
+            raise CoreUnavailable()
+        grammar[name] = GrammarForm(_choice(wire[f"{name}_status"], FORM_STATUSES), form)
+    for name in status_only:
+        grammar[name] = GrammarForm(_choice(wire[f"{name}_status"], FORM_STATUSES))
+    for name in plain:
+        grammar[name] = _choice(wire[name], SEPARABILITY)
+    return grammar
+
+
+def _owner_card(value: Any) -> OwnerCard:
+    card = _object(value, {"card_id", "card_type", "lemma", "cefr", "card_revision", "language", "state",
+                           "translations", "grammar"})
+    translations = _object(card["translations"], set(OWNER_LANGUAGES))
+    card_type = _choice(card["card_type"], CARD_TYPES)
+    if type(card["lemma"]) is not str or not is_version(card["card_revision"]):
+        raise CoreUnavailable()
+    return OwnerCard(_uuid(card["card_id"]), card_type, card["lemma"], _choice(card["cefr"], CEFR_LEVELS),
+                     int(card["card_revision"]), _choice(card["language"], OWNER_LANGUAGES),
+                     _choice(card["state"], CARD_STATES),
+                     {language: _text_list(translations[language]) for language in OWNER_LANGUAGES},
+                     _grammar(card["grammar"], card_type))
+
+
+def _search_card(value: Any) -> OwnerSearchCard:
+    card = _object(value, {"card_id", "lemma", "type", "cefr", "state", "preview"})
+    if type(card["lemma"]) is not str:
+        raise CoreUnavailable()
+    return OwnerSearchCard(_uuid(card["card_id"]), card["lemma"], _choice(card["type"], CARD_TYPES),
+                           _choice(card["cefr"], CEFR_LEVELS), _choice(card["state"], CARD_STATES),
+                           _optional_text(card["preview"]))
+
+
+def _owner_command(value: Any, command_id: UUID, card_id: UUID) -> OwnerCommand:
+    """The answer of one owner command, checked against the command that was sent."""
+    answer = _object(value, {"command", "current"})
+    fact = _object(answer["command"], {"id", "status", "applied_at", "target_id", "object_version"})
+    if (fact["id"] != str(command_id) or not is_version(fact["object_version"])
+            or type(fact["applied_at"]) is not str or not is_optional_text(fact["target_id"])):
+        raise CoreUnavailable()
+    status = _choice(fact["status"], COMMAND_STATUSES)
+    current = None if answer["current"] is None else _owner_card(answer["current"])
+    if current is not None and current.card_id != card_id:
+        # The answer is about another card than the command named.
+        raise CoreUnavailable()
+    return OwnerCommand(status, int(fact["object_version"]), current)
+
+
+def _card_reference(card_id: UUID) -> str:
+    if not isinstance(card_id, UUID):
+        raise TypeError("A card is named by its UUID")
+    return str(card_id)
 
 
 def is_version(value: Any) -> bool:
@@ -317,6 +500,70 @@ class HttpCoreGateway:
         body = {**_actor(principal), "command_id": str(UUID(str(command_id))),
                 "expected_version": _version(expected_version), "mode": mode}
         return _object(await self.client.answer("/admission/change_mode", body), {"command", "current"})
+
+    async def owner_search(self, principal: TelegramPrincipal, *, query: str, limit: int = SEARCH_LIMIT_MAX,
+                           card_type: str | None = None) -> OwnerSearch:
+        """Published cards matching ``query`` (a word, a form or a card id), hidden ones included (Q07, Q08).
+
+        A read: FORBIDDEN unless the actor is the active owner; nothing is written.
+        """
+        if type(query) is not str or not 1 <= len(query) <= QUERY_MAX_CHARACTERS:
+            raise ValueError("A search query has 1 to 200 characters")
+        if type(limit) is not int or not 1 <= limit <= SEARCH_LIMIT_MAX:
+            raise ValueError("A search limit is 1 to 10")
+        body = {**_actor(principal), "query": query, "limit": limit}
+        if card_type is not None:
+            body["type"] = card_type
+        answer = _object(await self.client.answer("/owner/cards/search", body), {"cards", "more"})
+        if not isinstance(answer["cards"], list) or type(answer["more"]) is not bool or len(answer["cards"]) > limit:
+            raise CoreUnavailable()
+        return OwnerSearch(tuple(_search_card(card) for card in answer["cards"]), answer["more"])
+
+    async def owner_card(self, principal: TelegramPrincipal, *, card_id: UUID) -> OwnerCard:
+        """One published card as the owner edits it; WRITE_UNAVAILABLE (409) for an absent or unpublished one."""
+        body = {**_actor(principal), "card_id": _card_reference(card_id)}
+        answer = _object(await self.client.answer("/owner/cards/read", body), {"current"})
+        card = _owner_card(answer["current"])
+        if card.card_id != card_id:
+            raise CoreUnavailable()
+        return card
+
+    async def translation_op(self, principal: TelegramPrincipal, *, command_id: UUID, card_id: UUID,
+                             language: str, op: str, index: int | None, text: str | None,
+                             expected_card_revision: int) -> OwnerCommand:
+        """One operation on the common translations of one language (R14-01, R12-06).
+
+        ``replace``: index and text; ``append``: text; ``remove``, ``move_up``, ``move_down``:
+        index, counted from 1 in the list at ``expected_card_revision``. The body names
+        exactly what the caller passed: the same update gives the same body (§4.4).
+        """
+        if language not in OWNER_LANGUAGES or op not in TRANSLATION_OPERATIONS:
+            raise ValueError("Unknown language or translation operation")
+        if index is not None and (type(index) is not int or not 1 <= index <= INDEX_MAX):
+            raise ValueError("A translation index is 1 to 99")
+        if text is not None and type(text) is not str:
+            raise TypeError("A translation is a text")
+        body = {**_actor(principal), "command_id": str(UUID(str(command_id))), "card_id": _card_reference(card_id),
+                "language": language, "op": op, "expected_card_revision": _version(expected_card_revision)}
+        if index is not None:
+            body["index"] = index
+        if text is not None:
+            body["text"] = text
+        return _owner_command(await self.client.answer("/owner/cards/translation", body), command_id, card_id)
+
+    async def grammar_save(self, principal: TelegramPrincipal, *, command_id: UUID, card_id: UUID,
+                           field_name: str, value: dict | str, expected_card_revision: int) -> OwnerCommand:
+        """One grammar field (R12-05): ``{"status", "value"}``, or the plain value of separability."""
+        if isinstance(value, dict):
+            if set(value) != {"status", "value"}:
+                raise ValueError("A grammar form is {status, value}")
+            value = {"status": value["status"], "value": value["value"]}
+        elif type(value) is not str:
+            raise TypeError("A grammar value is a form or a plain value")
+        body = {**_actor(principal), "command_id": str(UUID(str(command_id))), "card_id": _card_reference(card_id),
+                "field_name": field_name, "value": value,
+                "expected_card_revision": _version(expected_card_revision)}
+        return _owner_command(await self.client.answer("/owner/cards/grammar", body), command_id, card_id)
 
     async def aclose(self) -> None:
         await self.client.aclose()
