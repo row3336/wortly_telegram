@@ -13,7 +13,9 @@ button of the access_reminder digest and the list below; callback_data is
   "not allowed". No answer of the core: "try again later" (§5.3 п.2).
 - A request whose applicant deleted the profile is gone from the core (P04 §3.3, PD-19): the
   repeat of the same command_id is already_applied with current ``{"status": "unavailable"}``
-  and the owner is told the request is no longer available (the buttons go); a new press on it
+  and the owner is told the request is no longer available (a notice, and the buttons go; the text of
+  the pressed message is never rewritten, since a repeat may come after the outcome was shown there and
+  carries the text from before it); a new press on it
   is FORBIDDEN, answered like any FORBIDDEN, and nothing is written. The bot cannot tell that
   FORBIDDEN from a refusal to a non-owner: the core gives the same code.
 - "Reject with a reason" asks for the reason; the owner's next plain text in this chat is
@@ -228,6 +230,12 @@ async def _edit(context: BotContext, chat_id: int, message_id: int, text: str) -
                                                            reply_markup=None), sleep=context.sleep)
 
 
+async def _drop_buttons(context: BotContext, chat_id: int, message_id: int) -> None:
+    """Take the buttons off a message and leave its text as it is (it may already show the outcome)."""
+    await send_reply(lambda: context.bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id,
+                                                                   reply_markup=None), sleep=context.sleep)
+
+
 async def _say(update: Update, context: BotContext, text: str, markup=None) -> None:
     chat_id = update.effective_chat.id
     await send_reply(lambda: context.bot.send_message(chat_id=chat_id, text=text, reply_markup=markup),
@@ -276,7 +284,7 @@ class AccessService:
         elif outcome == Outcome.CONFLICT:
             await _edit(context, chat_id, message_id, _with(text, ALREADY_HANDLED[language]))
         elif outcome == Outcome.GONE:
-            await _edit(context, chat_id, message_id, _with(text, REQUEST_GONE[language]))
+            await _drop_buttons(context, chat_id, message_id)
 
     async def on_reason(self, update: Update, context: BotContext) -> None:
         waiting = self.inputs.of(update)
@@ -300,8 +308,11 @@ class AccessService:
         if outcome == Outcome.FORBIDDEN:
             await _say(update, context, FORBIDDEN[language])
             return
-        result = (outcome_text(False, reason, language) if outcome == Outcome.APPLIED
-                  else REQUEST_GONE[language] if outcome == Outcome.GONE else ALREADY_HANDLED[language])
+        if outcome == Outcome.GONE:
+            await _drop_buttons(context, waiting.chat_id, waiting.message_id)
+            await _say(update, context, REQUEST_GONE[language])
+            return
+        result = outcome_text(False, reason, language) if outcome == Outcome.APPLIED else ALREADY_HANDLED[language]
         await _edit(context, waiting.chat_id, waiting.message_id, _with(waiting.message_text, result))
         await _say(update, context, result)
 

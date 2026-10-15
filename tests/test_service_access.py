@@ -149,9 +149,10 @@ async def test_the_repeat_on_a_deleted_applicants_request_says_it_is_gone_and_dr
     [call] = decisions(owner_gateway)
     assert call.principal == TelegramPrincipal(str(OWNER_ID))
     assert callback_texts(telegram) == [GONE[language]]
-    [edit] = telegram.calls_to("editMessageText")
-    assert edit.params["text"] == f"{ORIGINAL}\n\n{GONE[language]}"
-    assert "reply_markup" not in edit.params
+    # The buttons go; the text of the message is not touched.
+    [markup] = telegram.calls_to("editMessageReplyMarkup")
+    assert markup.params["message_id"] == "1" and "reply_markup" not in markup.params
+    assert telegram.calls_to("editMessageText") == []
     assert telegram.calls_to("sendMessage") == []
 
 
@@ -166,14 +167,53 @@ async def test_only_current_unavailable_is_the_gone_answer(telegram, owner_gatew
     assert telegram.calls_to("sendMessage") == []
 
 
+async def test_a_repeat_after_the_outcome_was_shown_keeps_the_outcome_text(telegram, owner_gateway, application):
+    # The same update comes again after the applicant deleted the profile: its message text is the one from
+    # before the outcome, so rewriting it would erase "access granted". Only the buttons are taken off.
+    data = press("a")
+    await feed(application, data)
+    [first] = telegram.calls_to("editMessageText")
+    assert first.params["text"] == f"{ORIGINAL}\n\n✅ Доступ выдан"
+    owner_gateway.result = gone()
+    await feed(application, data)
+    first_call, second_call = decisions(owner_gateway)
+    assert first_call.arguments["command_id"] == second_call.arguments["command_id"]
+    assert len(telegram.calls_to("editMessageText")) == 1  # nothing rewrote the outcome
+    assert len(telegram.calls_to("editMessageReplyMarkup")) == 1
+    assert callback_texts(telegram) == [None, GONE["ru"]]
+
+
+@pytest.mark.parametrize(("action", "outcome"), [("a", "✅ Доступ выдан"), ("r", "❌ Отклонён")])
+async def test_an_applied_status_is_applied_whatever_current_says(telegram, owner_gateway, application, action, outcome):
+    # The core cannot answer applied with current unavailable; if it did, the status decides, not "current".
+    answer = gone()
+    answer["command"]["status"] = "applied"
+    owner_gateway.result = answer
+    await feed(application, press(action))
+    assert callback_texts(telegram) == [None]
+    [edit] = telegram.calls_to("editMessageText")
+    assert edit.params["text"] == f"{ORIGINAL}\n\n{outcome}"
+    assert telegram.calls_to("editMessageReplyMarkup") == []
+
+
+async def test_a_reason_applied_with_current_unavailable_is_still_applied(telegram, owner_gateway, application):
+    await feed(application, press("w"))
+    answer = gone()
+    answer["command"]["status"] = "applied"
+    owner_gateway.result = answer
+    await feed(application, say("причина"))
+    assert texts(telegram)[-1] == "❌ Отклонён\nПричина: причина"
+    assert len(telegram.calls_to("editMessageText")) == 1 and telegram.calls_to("editMessageReplyMarkup") == []
+
+
 async def test_the_repeat_with_a_reason_on_a_gone_request_says_so_and_ends_the_input(
         telegram, owner_gateway, application):
     await feed(application, press("w"))
     owner_gateway.result = gone()
     await feed(application, say("причина"))
     assert texts(telegram)[-1] == GONE["ru"]
-    [edit] = telegram.calls_to("editMessageText")
-    assert edit.params["text"] == f"{ORIGINAL}\n\n{GONE['ru']}"
+    assert len(telegram.calls_to("editMessageReplyMarkup")) == 1
+    assert telegram.calls_to("editMessageText") == []
     # The input is over: the next plain text is not a reason.
     owner_gateway.errors.clear()
     await feed(application, say("ещё", message_id=51))
