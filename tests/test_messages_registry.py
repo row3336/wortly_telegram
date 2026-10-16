@@ -9,7 +9,7 @@ import textwrap
 import pytest
 
 from wortly.jobs.kinds import discover as discover_kinds
-from wortly_telegram.messages import LANGUAGES, OutgoingMessage, RenderError, Template, reply_language
+from wortly_telegram.messages import LANGUAGES, REASONS, OutgoingMessage, RenderError, Template, reply_language
 from wortly_telegram.messages.plural import category, plural
 from wortly_telegram.messages.registry import (
     TemplateRegistry, TemplateRegistryError, discover,
@@ -39,7 +39,7 @@ def test_every_core_job_kind_has_a_template_in_every_language():
 
 
 # Kinds whose template is ready before the core's builder exists. Remove a name when DEV-15 adds its builder.
-AWAITING_CORE_BUILDER = frozenset({"weekly_report", "daily_report"})
+AWAITING_CORE_BUILDER = frozenset({"weekly_report", "daily_report", "evening_reminder"})
 
 
 def test_the_registry_has_no_template_for_a_kind_the_core_does_not_know():
@@ -76,6 +76,84 @@ def test_access_approved_is_the_notice_with_the_app_button():
 def test_faulty_facts_fail_before_any_network_call(facts):
     with pytest.raises(RenderError):
         discover().prepare("access_approved", facts)
+
+
+# The compatible pairs (kind, schema): what the core's builders write (ENVELOPE_SCHEMA of each), as a list.
+COMPATIBLE_PAIRS = {
+    ("access_approved", 1), ("access_reminder", 1), ("access_request", 1), ("inbox_message", 1),
+    ("study_reminder", 1), ("evening_reminder", 1), ("weekly_report", 1), ("daily_report", 2),
+}
+
+
+def test_the_compatible_pairs_of_kind_and_schema_are_exactly_these():
+    registry = discover()
+    assert {(kind, registry.template(kind).schema) for kind in registry.kinds} == COMPATIBLE_PAIRS
+
+
+@pytest.mark.parametrize(("kind", "schema", "body"), [
+    ("daily_report", 1, {"local_date": "2026-10-12", "total": 20, "correct": 17}),
+    ("daily_report", 1, {"utc_date": "2026-10-12", "total": 20, "correct": 17}),
+    ("daily_report", 3, {"local_date": "2026-10-12", "total": 20, "correct": 17}),
+    ("daily_report", True, {"local_date": "2026-10-12", "total": 20, "correct": 17}),
+    ("daily_report", "2", {"local_date": "2026-10-12", "total": 20, "correct": 17}),
+    ("daily_report", None, {"local_date": "2026-10-12", "total": 20, "correct": 17}),
+    ("evening_reminder", 2, {"local_date": "2026-10-08", "pair": "ru-de", "items": [{"type": "reviews_ready", "ready": 1}]}),
+    ("study_reminder", 2, {"local_date": "2026-10-08", "pair": "ru-de", "items": [{"type": "learning_ready", "ready": 1}]}),
+    ("weekly_report", 2, {}),
+    ("access_approved", 2, {}),
+], ids=["daily-1", "daily-1-utc", "daily-3", "daily-bool", "daily-str", "daily-none", "evening-2", "study-2",
+        "weekly-2", "approved-2"])
+def test_a_pair_outside_the_list_is_refused_before_any_network_call(kind, schema, body):
+    with pytest.raises(RenderError) as refused:
+        discover().prepare(kind, envelope(kind, schema=schema, body=body))
+    assert refused.value.reason == "schema_mismatch"
+
+
+def test_the_daily_envelope_of_schema_2_is_prepared_and_the_other_kinds_keep_schema_1():
+    body = {"local_date": "2026-10-12", "total": 20, "correct": 17}
+    assert discover().prepare("daily_report", envelope("daily_report", schema=2, body=body)).chat_id == 4242
+    for kind in COMPATIBLE_PAIRS:
+        if kind[0] != "daily_report":
+            assert discover().template(kind[0]).schema == 1
+
+
+@pytest.mark.parametrize(("facts", "reason"), [
+    ("not json", "not_json"),
+    (json.dumps([1]), "envelope_shape"),
+    (envelope(schema=2), "schema_mismatch"),
+    (envelope(kind="study_reminder"), "kind_mismatch"),
+    (envelope(language="de"), "language_unsupported"),
+    (envelope(recipient={}), "recipient_invalid"),
+    (envelope(recipient="4242"), "recipient_invalid"),
+    (envelope(body=[]), "body_invalid"),
+    (envelope(body={"unexpected": 1}), "render_invalid"),
+], ids=["not-json", "not-object", "schema", "kind", "language", "recipient", "recipient-not-object", "body-list",
+        "body-keys"])
+def test_a_refusal_names_a_bounded_category(facts, reason):
+    with pytest.raises(RenderError) as refused:
+        discover().prepare("access_approved", facts)
+    assert refused.value.reason == reason and reason in REASONS
+
+
+def test_an_unknown_kind_is_the_category_unknown_kind():
+    with pytest.raises(RenderError) as refused:
+        discover().prepare("no_such_kind", envelope(kind="no_such_kind"))
+    assert refused.value.reason == "unknown_kind"
+
+
+def test_a_body_with_other_keys_is_the_category_body_keys():
+    with pytest.raises(RenderError) as refused:
+        discover().prepare("daily_report", envelope("daily_report", schema=2, body={"utc_date": "2026-10-12", "total": 1, "correct": 1}))
+    assert refused.value.reason == "body_keys"
+
+
+def test_a_reason_outside_the_list_and_a_schema_outside_the_domain_are_refused_to_declare():
+    with pytest.raises(ValueError):
+        RenderError("x", reason="made up")
+    assert RenderError("x").reason == "render_invalid"
+    for schema in (0, -1, True, "2", None, 1.0):
+        with pytest.raises(ValueError):
+            Template("x_kind", lambda body, language: OutgoingMessage("t"), examples=({},), schema=schema)
 
 
 def test_an_unknown_kind_has_no_template():

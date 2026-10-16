@@ -22,6 +22,7 @@ WORKING_TEXTS = (
     ("messages/access_request.py", "REJECT_WITH_REASON_LABELS"),
     ("messages/access_reminder.py", "PENDING_DECISION"),
     ("messages/access_reminder.py", "SHOW_REQUESTS_LABELS"),
+    ("messages/study_reminder.py", "REVIEWS_READY_LINES"),
     ("messages/weekly_report.py", "WEEKLY_TEXTS"),
     ("messages/daily_report.py", "DAILY_TEXTS"),
     ("service/access.py", "APPROVED"),

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import logging
 from pathlib import Path
 import re
 
@@ -28,7 +29,7 @@ from wortly_telegram.messages.registry import discover
 
 
 def body(**changes):
-    facts = {"utc_date": "2026-10-12", "total": 20, "correct": 17}
+    facts = {"local_date": "2026-10-12", "total": 20, "correct": 17}
     facts.update(changes)
     return facts
 
@@ -39,10 +40,11 @@ def without(key):
     return facts
 
 
-# Written out by hand from the old bot's i18n (report_retention_daily, report_zone_*), plus "UTC".
-TITLE = {"ru": "Ретеншн ({day} UTC, первое касание): {rate}%",
-         "uk": "Ретеншн ({day} UTC, перший дотик): {rate}%",
-         "en": "Retention ({day} UTC, first touch): {rate}%"}
+# Written out by hand: the old bot's i18n (report_retention_daily, report_zone_*); the title has the local
+# date without "UTC" (table 6 of project_notifications ed.4, T1).
+TITLE = {"ru": "Ретеншн ({day}, первое касание): {rate}%",
+         "uk": "Ретеншн ({day}, перший дотик): {rate}%",
+         "en": "Retention ({day}, first touch): {rate}%"}
 CORRECT = {"ru": "Верно: {c}/{t}", "uk": "Вірно: {c}/{t}", "en": "Correct: {c}/{t}"}
 ZONE = {
     "overload": {"ru": "<70%: перегрузка — слишком трудно, сбавь",
@@ -98,9 +100,35 @@ def test_the_message_is_ordinary_and_plain_apart_from_the_block(language):
     assert (message.app_button, message.buttons, message.app_card, message.app_label) == (False, (), None, None)
 
 
-def test_the_utc_date_is_shown_on_the_second_line_after_the_hashtag():
-    first, second, *_ = unwrap(render(body(utc_date="2026-03-01"), "en").text).split("\n")
-    assert first == "#daily" and "2026-03-01 UTC" in second
+def test_the_local_date_is_shown_on_the_second_line_after_the_hashtag_without_utc():
+    first, second, *_ = unwrap(render(body(local_date="2026-03-01"), "en").text).split("\n")
+    assert first == "#daily" and "(2026-03-01, first touch)" in second and "UTC" not in second
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_no_text_of_the_report_names_utc(language):
+    assert not any("UTC" in text for text in daily_report.DAILY_TEXTS[language].values())
+    assert "UTC" not in render(body(), language).text
+
+
+@pytest.mark.parametrize("facts", [
+    {"utc_date": "2026-10-12", "total": 20, "correct": 17},
+    {"utc_date": "2026-10-12", "local_date": "2026-10-12", "total": 20, "correct": 17},
+], ids=["utc-body-of-the-earlier-core", "both-dates"])
+def test_the_body_of_the_earlier_core_with_utc_date_is_refused(facts):
+    # N-AC33, N-AC41: a core with utc_date and a template with local_date are not released together;
+    # the old body is refused before any network call (pre_send_error), never shown as a local day.
+    with pytest.raises(RenderError) as error:
+        render(facts, "en")
+    assert "2026" not in str(error.value)
+    with pytest.raises(RenderError):
+        discover().prepare(KIND, json.dumps(envelope(KIND, body=facts, schema=2)))
+
+
+def test_the_key_of_the_body_is_local_date_in_the_examples_and_the_contract():
+    assert daily_report._FIELDS == {"local_date", "total", "correct"}
+    for example in TEMPLATE.examples:
+        assert set(example) == {"local_date", "total", "correct"}
 
 
 @pytest.mark.parametrize(("correct", "total", "rate", "zone"), [
@@ -184,9 +212,9 @@ def test_the_block_has_exactly_one_opening_and_one_closing_fence():
 
 
 @pytest.mark.parametrize("facts", [
-    body(utc_date="2026-10-12```\n[x](tg://user?id=1)"),
-    body(utc_date="2026-10-12`"),
-    body(utc_date="2026-10-12\\"),
+    body(local_date="2026-10-12```\n[x](tg://user?id=1)"),
+    body(local_date="2026-10-12`"),
+    body(local_date="2026-10-12\\"),
     body(total="5```"),
     body(correct="`1`"),
 ])
@@ -203,7 +231,7 @@ def test_a_day_without_a_first_touch_is_no_message():
         render(body(total=0, correct=0), "en")
 
 
-@pytest.mark.parametrize("key", ["utc_date", "total", "correct"])
+@pytest.mark.parametrize("key", ["local_date", "total", "correct"])
 def test_a_missing_fact_is_refused(key):
     with pytest.raises(RenderError):
         render(without(key), "en")
@@ -211,10 +239,10 @@ def test_a_missing_fact_is_refused(key):
 
 @pytest.mark.parametrize("facts", [
     {}, body(extra=1), body(rate=85.0), body(name="Ann"), body(word="Haus"), body(chat_id=777000),
-    body(utc_date=None), body(utc_date=20261012), body(utc_date=datetime(2026, 10, 12)),
-    body(utc_date="2026-10-12T00:00:00"), body(utc_date=" 2026-10-12"), body(utc_date="2026-10-12\n"),
-    body(utc_date="2026-02-30"), body(utc_date="2026-13-01"), body(utc_date="26-10-12"),
-    body(utc_date="２０２６-１０-１２"),
+    body(local_date=None), body(local_date=20261012), body(local_date=datetime(2026, 10, 12)),
+    body(local_date="2026-10-12T00:00:00"), body(local_date=" 2026-10-12"), body(local_date="2026-10-12\n"),
+    body(local_date="2026-02-30"), body(local_date="2026-13-01"), body(local_date="26-10-12"),
+    body(local_date="２０２６-１０-１２"),
     body(total=True), body(total=20.0), body(total="20"), body(total=None), body(total=-1),
     body(correct=True), body(correct=17.0), body(correct="17"), body(correct=None), body(correct=-1),
     body(total=5, correct=6),
@@ -230,7 +258,7 @@ def test_faulty_facts_are_refused_and_the_error_names_no_value(facts):
 
 def test_the_text_holds_only_the_four_lines_of_the_report_and_nothing_personal():
     registry = discover()
-    prepared = registry.prepare(KIND, json.dumps(envelope(KIND, language="ru", telegram_user_id="777000123", body=body())))
+    prepared = registry.prepare(KIND, json.dumps(envelope(KIND, language="ru", telegram_user_id="777000123", body=body(), schema=2)))
     assert prepared.chat_id == 777000123 and "777000123" not in prepared.message.text
     assert len(unwrap(prepared.message.text).split("\n")) == 4
 
@@ -284,7 +312,7 @@ def channel(telegram, bot_loop):
 
 
 def facts_for(language="ru", user_id="777000", **changes):
-    return envelope(KIND, language=language, telegram_user_id=user_id, body=body(**changes))
+    return envelope(KIND, language=language, telegram_user_id=user_id, body=body(**changes), schema=2)
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -304,10 +332,30 @@ def test_a_zero_day_reaches_no_request(telegram, channel):
     assert telegram.calls_to("sendMessage") == []
 
 
-@pytest.mark.parametrize("changes", [{"utc_date": "2026-10-12```"}, {"total": "20"}, {"correct": 21}])
+@pytest.mark.parametrize("changes", [{"local_date": "2026-10-12```"}, {"total": "20"}, {"correct": 21}])
 def test_faulty_facts_reach_no_request(telegram, channel, changes):
     result = channel.deliver(snapshot(KIND, facts_for(**changes)))
     assert (result.outcome, result.reason) == ("known_failed", "pre_send_error")
+    assert telegram.calls_to("sendMessage") == []
+
+
+@pytest.mark.parametrize(("raw", "category"), [
+    (envelope(KIND, language="ru", telegram_user_id="777000", schema=1,
+              body={"utc_date": "2026-10-12", "total": 20, "correct": 17}), "schema_mismatch"),
+    (envelope(KIND, language="ru", telegram_user_id="777000", schema=2,
+              body={"utc_date": "2026-10-12", "total": 20, "correct": 17}), "body_keys"),
+    (envelope("no_such_kind", language="ru", telegram_user_id="777000", schema=2,
+              body={"local_date": "2026-10-12", "total": 20, "correct": 17}), "unknown_kind"),
+    (envelope(KIND, language="ru", telegram_user_id="777000", schema=2,
+              body={"local_date": "2026-10-12", "total": 0, "correct": 0}), "render_invalid"),
+], ids=["old-schema", "old-body", "unknown-kind", "empty-day"])
+def test_the_log_of_a_refused_envelope_tells_the_category_and_no_fact(telegram, channel, caplog, raw, category):
+    caplog.set_level(logging.WARNING)
+    snap = snapshot(raw["kind"], raw)
+    result = channel.deliver(snap)
+    assert (result.outcome, result.reason) == ("known_failed", "pre_send_error")
+    [line] = [record.getMessage() for record in caplog.records if "not formatted" in record.getMessage()]
+    assert line == f"delivery not formatted: RenderError: {category}"
     assert telegram.calls_to("sendMessage") == []
 
 

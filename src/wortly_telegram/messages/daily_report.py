@@ -1,13 +1,14 @@
 """Template of the daily_report job: the old bot's ``#daily`` retention report (Q06; К19-011; CON:315, TZC:470).
 
-The core's builder (DEV-15) owns everything but the text: the previous UTC day, the first
-touch of each card in the profile's directions, the 03:00 UTC window, five profiles per pass,
-the switch, the admitted recipients (the owner too), the dedup by UTC date and the capacity
-check (C05). This module only turns facts that are already fixed into one message.
+The core's builder owns everything but the text: the profile's previous local study day
+(project_notifications ed.4 §7.5, T1), the first touch of each card in the profile's
+directions, the hour of the report, the switch, the admitted recipients (the owner too), the
+dedup by local date and the capacity check (C05). This module only turns facts that are
+already fixed into one message.
 
 The body is flat and has exactly three facts, none of them personal:
 
-    utc_date  the reported UTC day, "YYYY-MM-DD" (it may differ from the Mini App's local day)
+    local_date  the reported local day of the profile, "YYYY-MM-DD" (the Mini App's study day)
     total     cards touched that day, each once by its first answer
     correct   of them answered right
 
@@ -15,7 +16,9 @@ The percent is not a fact: it is ``round(correct / total * 100, 1)`` as in the o
 (``reports.py``, ``storage.get_daily_first_touch_retention``), and the zone follows that
 rounded value: below 70, 70 to below 80, 80 to 90 inclusive, above 90 to 95 inclusive, above 95.
 A day without a first touch is no message (CON:315): the template fails closed, and so do
-facts that contradict each other.
+facts that contradict each other. The body of the earlier release, with ``utc_date``, is not
+accepted: the core that writes it and this template are not released together (N-AC33, N-AC41),
+and a report of a UTC day must not be shown as a local one.
 
 The text is a monospace Markdown block, sent with ``parse_mode="MarkdownV2"`` as the old bot
 sent it with ``Markdown``: the owner's narrow exception to ВП-16 (R9-04, К19-049; the other one
@@ -37,17 +40,21 @@ from ._markdown_v2 import escape_pre
 
 
 KIND = "daily_report"
+# The envelope of the local-day report: the core's builder (N4) raises its ENVELOPE_SCHEMA to 2 with the key
+# local_date (project_notifications ed.4 §7.5, N-AC33). Schema 1 is the earlier body with utc_date.
+SCHEMA = 2
 
-_FIELDS = frozenset({"utc_date", "total", "correct"})
+_FIELDS = frozenset({"local_date", "total", "correct"})
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 # WORKING TEXT (not set by the specification): the lines of #daily are the old bot's wording
-# (german_dictionary bot/i18n.py report_retention_daily, report_zone_*), with "UTC" after the
-# date as TZC:470 requires; the wording for Wortly is not shown to the owner yet (Q06 keeps
-# the report, not its words); final wording waits for the owner (T-TEXTS-PAGE).
+# (german_dictionary bot/i18n.py report_retention_daily, report_zone_*); the title has the
+# profile's local date without "UTC" (table 6 of project_notifications ed.4, T1; the
+# date is the local study day); the wording for Wortly is not shown to the owner yet (Q06
+# keeps the report, not its words); final wording waits for the owner (T-TEXTS-PAGE).
 DAILY_TEXTS: dict[Language, dict[str, str]] = {
     "ru": {
-        "title": "Ретеншн ({day} UTC, первое касание): {rate}%",
+        "title": "Ретеншн ({day}, первое касание): {rate}%",
         "correct": "Верно: {correct}/{total}",
         "overload": "<70%: перегрузка — слишком трудно, сбавь",
         "below_optimal": "70-80%: ниже оптимума — трудновато",
@@ -56,7 +63,7 @@ DAILY_TEXTS: dict[Language, dict[str, str]] = {
         "too_easy": ">95%: слишком легко — добавь новых слов",
     },
     "uk": {
-        "title": "Ретеншн ({day} UTC, перший дотик): {rate}%",
+        "title": "Ретеншн ({day}, перший дотик): {rate}%",
         "correct": "Вірно: {correct}/{total}",
         "overload": "<70%: перевантаження — надто важко, збав темп",
         "below_optimal": "70-80%: нижче оптимуму — важкувато",
@@ -65,7 +72,7 @@ DAILY_TEXTS: dict[Language, dict[str, str]] = {
         "too_easy": ">95%: надто легко — додай нових слів",
     },
     "en": {
-        "title": "Retention ({day} UTC, first touch): {rate}%",
+        "title": "Retention ({day}, first touch): {rate}%",
         "correct": "Correct: {correct}/{total}",
         "overload": "<70%: overload — too hard, ease off",
         "below_optimal": "70-80%: below optimal — a bit hard",
@@ -84,13 +91,13 @@ def _count(value: object) -> int:
     return value
 
 
-def _utc_date(value: object) -> date:
+def _local_date(value: object) -> date:
     if type(value) is not str or not _DATE.fullmatch(value):
-        raise RenderError("The reported UTC day is a date")
+        raise RenderError("The reported local day is a date")
     try:
         return date.fromisoformat(value)
     except ValueError:
-        raise RenderError("The reported UTC day is a date") from None
+        raise RenderError("The reported local day is a date") from None
 
 
 def rate_of(correct: int, total: int) -> float:
@@ -111,8 +118,8 @@ def zone_of(rate: float) -> str:
 
 def render(body: Mapping[str, Any], language: Language) -> OutgoingMessage:
     if set(body) != _FIELDS:
-        raise RenderError("The daily_report body has unexpected facts")
-    day = _utc_date(body["utc_date"])
+        raise RenderError("The daily_report body has unexpected facts", reason="body_keys")
+    day = _local_date(body["local_date"])
     total, correct = _count(body["total"]), _count(body["correct"])
     if total == 0:
         # A day without a first touch is no message (CON:315); the core must not ask for one.
@@ -130,6 +137,6 @@ def render(body: Mapping[str, Any], language: Language) -> OutgoingMessage:
 
 
 TEMPLATE = Template(KIND, render, examples=(
-    {"utc_date": "2026-10-12", "total": 20, "correct": 17},
-    {"utc_date": "2026-10-12", "total": 1, "correct": 1},
-))
+    {"local_date": "2026-10-12", "total": 20, "correct": 17},
+    {"local_date": "2026-10-12", "total": 1, "correct": 1},
+), schema=SCHEMA)

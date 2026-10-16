@@ -241,6 +241,8 @@ def test_the_adapter_logs_only_classes_and_outcomes():
     start_errors = {
         ("bot_main.py", "bot not started: %s", ("error",)),
         ("delivery/main.py", "delivery not started: %s: %s", ("type(error).__name__", "error")),
+        # The category of a RenderError (a bounded word, messages.REASONS), never its text.
+        ("delivery/channel.py", "delivery not formatted: %s: %s", ("type(error).__name__", "_fault_reason(error)")),
     }
     suspicious = []
     for path in source.rglob("*.py"):

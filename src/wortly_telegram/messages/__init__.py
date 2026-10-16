@@ -25,11 +25,25 @@ Language = Literal["ru", "uk", "en"]
 LANGUAGES: tuple[Language, ...] = ("ru", "uk", "en")
 
 
+# The categories of a RenderError, the only thing about it that reaches a log (delivery.channel).
+REASONS = frozenset({
+    "unknown_kind", "not_json", "envelope_shape", "schema_mismatch", "kind_mismatch", "language_unsupported",
+    "recipient_invalid", "body_invalid", "body_keys", "template_fault", "render_invalid",
+})
+
+
 class RenderError(ValueError):
     """The facts cannot become a message; nothing was sent (pre_send_error, §3.3).
 
-    The message names the fault only, never a fact or a text.
+    The message names the fault only, never a fact or a text. ``reason`` is the category
+    of the fault, one word of REASONS; it is what the delivery log tells of a refusal.
     """
+
+    def __init__(self, message: str = "", *, reason: str = "render_invalid") -> None:
+        super().__init__(message)
+        if reason not in REASONS:
+            raise ValueError("A RenderError reason is one word of REASONS")
+        self.reason = reason
 
 
 # Telegram's bound of an inline button's callback_data, in bytes (Bot API InlineKeyboardButton).
@@ -125,11 +139,15 @@ class Template:
     ``render`` gets the envelope's body and a supported language. ``examples`` are
     bodies the contract test renders in every language, so a missing language or a
     template that cannot render its own kind fails the test instead of a delivery.
+    ``schema`` is the number of the envelope the core's builder of the kind writes
+    (ENVELOPE_SCHEMA of the builder); it belongs to the kind, so a builder that raises
+    its number moves with its own template (#daily, project_notifications ed.4 §7.5).
     """
 
     kind: str
     render: Render
     examples: tuple[Mapping[str, Any], ...]
+    schema: int = 1
 
     def __post_init__(self) -> None:
         if type(self.kind) is not str or not self.kind.strip() or self.kind != self.kind.strip():
@@ -138,6 +156,8 @@ class Template:
             raise ValueError(f"Template {self.kind!r} needs a callable render")
         if not self.examples:
             raise ValueError(f"Template {self.kind!r} needs at least one example body")
+        if type(self.schema) is not int or self.schema < 1:
+            raise ValueError(f"Template {self.kind!r} needs an envelope schema number of 1 or more")
 
 
 def reply_language(saved: str | None, telegram: str | None) -> Language:

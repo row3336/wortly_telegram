@@ -13,8 +13,8 @@ NOW = datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc)
 
 
 def envelope(kind: str = "access_approved", *, language: str = "ru", telegram_user_id: str = "4242",
-             body: dict[str, Any] | None = None) -> dict[str, Any]:
-    return {"schema": 1, "kind": kind, "ui_language": language,
+             body: dict[str, Any] | None = None, schema: int = 1) -> dict[str, Any]:
+    return {"schema": schema, "kind": kind, "ui_language": language,
             "recipient": {"telegram_user_id": telegram_user_id}, "body": {} if body is None else body}
 
 

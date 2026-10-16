@@ -15,7 +15,9 @@ retry policy decides whether and when another attempt follows (TC:282).
 
 The coroutine runs on the event loop that owns the telegram.Bot; ``run`` hands it over
 from the delivery thread and waits for the result (delivery.main, ВП-13). Logs name
-the outcome and the exception class only, never the text, the chat or Telegram's answer.
+the outcome and the exception class only, never the text, the chat or Telegram's answer; a fault of
+the template step adds the category of its RenderError (a word of messages.REASONS), so an unsupported
+envelope schema is told from an unknown kind or a body of another form.
 
 Trail (R3-03, events TZ §4.3): every attempt that reaches the channel writes one ``d.job.done``
 line with the job, the attempt (its ID and number), the kind, the outcome, the failure class
@@ -43,6 +45,7 @@ from wortly.jobs.channel import SENT, ChannelResult
 from wortly.jobs.models import DeliverySnapshot
 from wortly.jobs.retry_policy import KIND_CLASSES, RETRY_RULES
 
+from ..messages import RenderError
 from ..messages.registry import TemplateRegistry
 from ..trail import DELIVERY, emit
 from ..webapp import keyboard
@@ -67,6 +70,11 @@ def attempt_outcome(kind: str, result: ChannelResult) -> str:
 
 class PausableCapacity(Protocol):
     def pause(self, duration: Any) -> None: ...
+
+
+def _fault_reason(error: Exception) -> str:
+    """The category of a RenderError, one word of messages.REASONS (never a text or a fact); "-" for any other fault."""
+    return error.reason if isinstance(error, RenderError) else "-"
 
 
 class TelegramChannel:
@@ -103,7 +111,9 @@ class TelegramChannel:
             prepared = self._templates.prepare(snapshot.context.kind, snapshot.facts.facts_json)
             markup = keyboard(prepared.message, self._web_app_url, prepared.language)
         except Exception as error:  # noqa: BLE001 - every fault here precedes the network
-            logger.warning("delivery not formatted: %s", type(error).__name__)
+            # A RenderError adds its category (schema_mismatch, unknown_kind, body_keys, ...), so an unsupported
+            # envelope schema is told from a body of another form; never its text. Any other fault: the type only.
+            logger.warning("delivery not formatted: %s: %s", type(error).__name__, _fault_reason(error))
             return PRE_SEND_ERROR
         # Only a quiet message names the option; every other call stays as it was.
         options: dict[str, Any] = {"disable_notification": True} if prepared.message.silent else {}

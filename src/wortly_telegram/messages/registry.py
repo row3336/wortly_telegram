@@ -29,7 +29,8 @@ from . import LANGUAGES, Language, OutgoingMessage, RenderError, Template
 PACKAGE = "wortly_telegram.messages"
 _FRAMEWORK_MODULES = frozenset({"registry", "plural"})
 
-# The envelope builders write (ВП-17; core jobs/builders/*.py).
+# The envelope number builders write by default (ВП-17; core jobs/builders/*.py, ENVELOPE_SCHEMA of each builder).
+# A kind whose builder writes another number declares it in its Template (``schema``).
 ENVELOPE_SCHEMA = 1
 
 
@@ -46,16 +47,16 @@ class Prepared:
     message: OutgoingMessage
 
 
-def _mapping(value: Any, name: str) -> Mapping[str, Any]:
+def _mapping(value: Any, name: str, reason: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise RenderError(f"The delivery facts' {name} must be an object")
+        raise RenderError(f"The delivery facts' {name} must be an object", reason=reason)
     return value
 
 
 def _chat_id(recipient: Mapping[str, Any]) -> int:
     value = recipient.get("telegram_user_id")
     if not is_telegram_id(value):
-        raise RenderError("The delivery facts name no Telegram recipient")
+        raise RenderError("The delivery facts name no Telegram recipient", reason="recipient_invalid")
     return int(value)
 
 
@@ -77,7 +78,7 @@ class TemplateRegistry:
         try:
             return self._templates[kind]
         except (KeyError, TypeError):
-            raise RenderError("No template for this job kind") from None
+            raise RenderError("No template for this job kind", reason="unknown_kind") from None
 
     def missing(self, kinds: Iterable[str]) -> frozenset[str]:
         """Job kinds the core can deliver that have no template here."""
@@ -89,26 +90,26 @@ class TemplateRegistry:
         try:
             facts = json.loads(facts_json)
         except (TypeError, ValueError):
-            raise RenderError("The delivery facts are not JSON") from None
-        facts = _mapping(facts, "envelope")
-        if facts.get("schema") != ENVELOPE_SCHEMA or type(facts.get("schema")) is not int:
-            raise RenderError("The delivery facts use an unsupported envelope schema")
+            raise RenderError("The delivery facts are not JSON", reason="not_json") from None
+        facts = _mapping(facts, "envelope", "envelope_shape")
+        if facts.get("schema") != template.schema or type(facts.get("schema")) is not int:
+            raise RenderError("The delivery facts use an unsupported envelope schema", reason="schema_mismatch")
         if facts.get("kind") != kind:
-            raise RenderError("The delivery facts belong to another job kind")
+            raise RenderError("The delivery facts belong to another job kind", reason="kind_mismatch")
         language = facts.get("ui_language")
         if type(language) is not str or language not in LANGUAGES:
             # Never substitute another language: the recipient chose this one (§4.2).
-            raise RenderError("The delivery facts name an unsupported language")
-        chat_id = _chat_id(_mapping(facts.get("recipient"), "recipient"))
-        body = _mapping(facts.get("body"), "body")
+            raise RenderError("The delivery facts name an unsupported language", reason="language_unsupported")
+        chat_id = _chat_id(_mapping(facts.get("recipient"), "recipient", "recipient_invalid"))
+        body = _mapping(facts.get("body"), "body", "body_invalid")
         try:
             message = template.render(body, language)
         except RenderError:
             raise
         except Exception as error:  # noqa: BLE001 - any template fault happens before the network
-            raise RenderError(f"The template failed: {type(error).__name__}") from None
+            raise RenderError(f"The template failed: {type(error).__name__}", reason="template_fault") from None
         if not isinstance(message, OutgoingMessage):
-            raise RenderError("The template returned no OutgoingMessage")
+            raise RenderError("The template returned no OutgoingMessage", reason="template_fault")
         return Prepared(chat_id, language, message)
 
 
