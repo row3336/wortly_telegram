@@ -235,5 +235,6 @@ def test_the_bot_refuses_the_weekly_envelope_of_the_core_when_the_pair_or_the_bo
         assert refused.value.reason == "schema_mismatch", schema
     renamed = {**{k: v for k, v in body.items() if k != "written_cards"}, "written_total": body["written_cards"]}
     for changed in ({**body, "pair": "uk-de"}, renamed, {k: v for k, v in body.items() if k != "written_correct"}):
-        with pytest.raises(RenderError):
+        with pytest.raises(RenderError) as refused:
             registry.prepare("weekly_report", json.dumps({**envelope, "body": changed}))
+        assert refused.value.reason == "body_keys", changed

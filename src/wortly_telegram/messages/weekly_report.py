@@ -118,7 +118,7 @@ def _advice(tenths: int) -> str:
 
 def render(body: Mapping[str, Any], language: Language) -> OutgoingMessage:
     if set(body) != _FIELDS:
-        raise RenderError("The weekly_report body has unexpected facts")
+        raise RenderError("The weekly_report body has unexpected facts", reason="body_keys")
     start = _monday(body["week_start"])
     if type(body["study_actions"]) is not bool:
         raise RenderError("study_actions must be a boolean")

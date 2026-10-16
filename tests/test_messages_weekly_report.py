@@ -7,6 +7,7 @@ and the numbers, not the final wording. Local fake transport only; no database, 
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 
@@ -166,6 +167,41 @@ def test_wrong_facts_fail_before_the_network_without_echoing_them(fact):
         assert "2026" not in str(raised.value)
 
 
+RENAMED = {**{key: value for key, value in body().items() if key != "written_cards"}, "written_total": 12}
+
+
+@pytest.mark.parametrize(("fact", "category"), [
+    ({}, "body_keys"),
+    ({**body(), "extra": 1}, "body_keys"),
+    ({**body(), "pair": "ru-de"}, "body_keys"),
+    ({key: value for key, value in body().items() if key != "written_correct"}, "body_keys"),
+    ({key: value for key, value in body().items() if key != "week_start"}, "body_keys"),
+    (RENAMED, "body_keys"),
+    # Faults of the values keep the general category: only the set of keys is body_keys.
+    (body(cards=3, correct=4), "render_invalid"),
+    (body(week_start="2026-10-06"), "render_invalid"),
+    (body(study_actions=False, cards=0, correct=0), "render_invalid"),
+], ids=["empty", "extra-fact", "extra-pair", "no-correct", "no-week", "renamed", "correct-over-cards",
+        "not-monday", "empty-week"])
+def test_a_body_with_other_keys_is_the_category_body_keys_as_in_daily(fact, category):
+    for language in LANGUAGES:
+        with pytest.raises(RenderError) as raised:
+            discover().prepare(KIND, facts(language, fact))
+        assert raised.value.reason == category
+    if category == "body_keys":
+        with pytest.raises(RenderError) as raised:
+            TEMPLATE.render(fact, "ru")  # the template itself, not only the registry
+        assert raised.value.reason == "body_keys"
+
+
+def test_another_schema_keeps_its_category():
+    for schema in (2, 0):
+        raw = envelope(KIND, language="ru", telegram_user_id="4242", body=body(), schema=schema)
+        with pytest.raises(RenderError) as raised:
+            discover().prepare(KIND, json.dumps(raw))
+        assert raised.value.reason == "schema_mismatch"
+
+
 def test_a_non_mapping_body_or_other_language_is_refused():
     with pytest.raises(RenderError):
         discover().prepare(KIND, facts(fact_body=[]))
@@ -228,6 +264,23 @@ def test_an_empty_week_reaches_no_request(telegram, channel):
     fact = body(study_actions=False, cards=0, correct=0)
     result = channel.deliver(snapshot(KIND, json.loads(facts(fact_body=fact))))
     assert (result.outcome, result.reason) == ("known_failed", "pre_send_error")
+    assert telegram.calls_to("sendMessage") == []
+
+
+@pytest.mark.parametrize(("raw", "category"), [
+    (envelope(KIND, language="ru", telegram_user_id="777000", body={**body(), "extra": 1}), "body_keys"),
+    (envelope(KIND, language="ru", telegram_user_id="777000",
+              body={key: value for key, value in body().items() if key != "written_correct"}), "body_keys"),
+    (envelope(KIND, language="ru", telegram_user_id="777000", body=body(), schema=2), "schema_mismatch"),
+    (envelope(KIND, language="ru", telegram_user_id="777000", body=body(study_actions=False, cards=0, correct=0)),
+     "render_invalid"),
+], ids=["extra-key", "missing-key", "other-schema", "empty-week"])
+def test_the_log_of_a_refused_weekly_envelope_tells_the_category_and_no_fact(telegram, channel, caplog, raw, category):
+    caplog.set_level(logging.WARNING)
+    result = channel.deliver(snapshot(KIND, raw))
+    assert (result.outcome, result.reason) == ("known_failed", "pre_send_error")
+    [line] = [record.getMessage() for record in caplog.records if "not formatted" in record.getMessage()]
+    assert line == f"delivery not formatted: RenderError: {category}"
     assert telegram.calls_to("sendMessage") == []
 
 
