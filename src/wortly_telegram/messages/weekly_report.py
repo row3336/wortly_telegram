@@ -1,8 +1,10 @@
 """Template of the weekly_report job: the quiet report of the written quiz for the last local week (Q05; К12-008…012).
 
-The core's builder (DEV-15) owns everything but the text: it picks the Monday 07:00 of the
-profile's zone, computes the previous local week, checks the switch, deduplicates and
-collects the facts. This module only turns facts that are already fixed into one message.
+The core's builder (DEV-15, N4) owns everything but the text: it picks the Monday at the hour of
+the profile's setting weekly_report_hour (7 by default) in its zone and the report window after
+that Monday (a catch-up after a failure, no report after a late switch-on), computes the previous
+local week, checks the switch, deduplicates and collects the facts. This module only turns facts
+that are already fixed into one message.
 
 The body is flat and has exactly four facts, none of them personal:
 
