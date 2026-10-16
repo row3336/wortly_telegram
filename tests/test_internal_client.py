@@ -295,6 +295,11 @@ def person(identities, connections, now, external: str, *, owner: bool = False):
             connection.execute("UPDATE profiles SET status='active', role='owner', current_access_request_id=NULL "
                                "WHERE id=%s", (profile["profile_id"],))
             connection.execute("DELETE FROM access_requests WHERE profile_id=%s", (profile["profile_id"],))
+            # Admission by SQL creates the settings row the core's admission would (К19-044),
+            # in the languages of the login, as the core's own tests do.
+            from wortly.identity.profile_defaults import admit_profile_settings
+            with connection.cursor() as cursor:
+                admit_profile_settings(cursor, profile["profile_id"], "uk", "uk")
             return None
         return connection.execute("SELECT id FROM access_requests WHERE profile_id=%s AND status='pending'",
                                   (profile["profile_id"],)).fetchone()[0]
